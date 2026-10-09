@@ -1,0 +1,22 @@
+name: Build Windows
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements-build.txt
+      - run: pytest -q test_graficar.py
+        continue-on-error: true
+      - run: pyinstaller --noconfirm --clean GasLab.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GasLab-windows
+          path: dist/GasLab

@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --ink:#1b1f24; --muted:#5b6570; --line:#d9dde3; --accent:#007f86; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body { display:flex; flex-direction:column; background:var(--bg); color:var(--ink); font:14px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:8px 12px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0; font-weight:650; }
+  header label { color:var(--muted); display:flex; align-items:center; gap:6px; }
+  select, button { font:inherit; padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); cursor:pointer; }
+  button:hover, select:hover { border-color:var(--accent); }
+  #chips { display:flex; flex-wrap:wrap; gap:4px; flex:1 1 100%; }
+  .chip { border:1px solid var(--line); border-radius:999px; padding:1px 10px; font-size:12.5px; user-select:none; cursor:pointer; background:#fff; }
+  .chip.on { color:#fff; border-color:transparent; }
+  #cur { margin-left:auto; color:var(--muted); font-variant-numeric:tabular-nums; }
+  main { flex:1; min-height:0; display:grid; gap:8px; padding:8px; grid-template-columns:1fr; }
+  main.withmap { grid-template-columns:1fr 1fr; }
+  #mapwrap, #plots { min-height:0; min-width:0; }
+  #mapwrap { background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; position:relative; }
+  #map { position:absolute; inset:0; }
+  #mapmsg { position:absolute; left:10px; bottom:10px; z-index:5; background:#fff; border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:12px; color:var(--muted); display:none; }
+  #plots { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); grid-auto-rows:260px; align-content:start; gap:8px; min-height:0; overflow-y:auto; scrollbar-gutter:stable; padding-right:4px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:8px; display:flex; flex-direction:column; min-height:0; min-width:0; overflow:hidden; }
+  .ph { display:flex; align-items:center; gap:8px; padding:4px 8px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .ph b { font-size:13px; }
+  .ph .st { color:var(--muted); font-size:11.5px; margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ph .val { font-variant-numeric:tabular-nums; font-weight:600; font-size:12.5px; }
+  .ph .ex { border:none; background:none; padding:0 4px; font-size:15px; color:var(--muted); }
+  .pg { position:relative; flex:1; min-height:0; }
+  .pg > .plot { position:absolute; inset:0; }
+  .cursor { position:absolute; top:0; bottom:0; width:0; border-left:1px dashed #666; pointer-events:none; display:none; }
+  #plots.one .panel { display:none; }
+  #plots.one .panel.big { display:flex; }
+  #plots.one { grid-template-columns:1fr; grid-auto-rows:minmax(0,1fr); overflow-y:hidden; }
+  .hint { color:var(--muted); font-size:12px; }
+  @media (max-width:1100px) { #plots:not(.one) { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  @media (max-width:650px) {
+    main.withmap { grid-template-columns:1fr; grid-template-rows:minmax(220px,38vh) minmax(0,1fr); }
+    #plots:not(.one) { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>__TITLE__</h1>
+  <label>Eje X <select id="xmode"></select></label>
+  <label id="lblbase">Mapa <select id="base"><option value="osm">OpenStreetMap</option><option value="sat">Satélite (Esri)</option></select></label>
+  <label id="lblcolor">Color de la ruta <select id="color"></select></label>
+  <label><input type="checkbox" id="fity" checked> Ajustar Y al tramo visible</label>
+  <button id="resetz">Restablecer zoom</button>
+  <button id="allv">Todas</button>
+  <span class="hint">Clic en el título de una gráfica para ampliarla (Esc para volver). Pasa el mouse por una gráfica o por el mapa para ver el mismo instante en todo.</span>
+  <span id="cur"></span>
+  <div id="chips"></div>
+</header>
+<main id="main">
+  <section id="mapwrap"><div id="map"></div><div id="mapmsg"></div></section>
+  <section id="plots"></section>
+</main>
+<script>__PLOTLY__</script>
+<script>
+const D = __DATA__;
+const $ = s => document.querySelector(s);
+const XLABEL = {fecha:'Fecha y hora', transcurrido:'Tiempo transcurrido (s)', indice:'Número de muestra'};
+const HAS_MAP = !!D.lat;
+const S = {vars: D.defaultVars.slice(), xmode: D.xmodes[0], color: D.defaultColor, base: 'osm', big: null, range: null};
+const LINE = 0, MARK = 1, HL = 2, CUR = 3, SE = 4;
+const mapDiv = $('#map');
+let panels = [];
+let syncing = false;
+const colorOf = v => D.palette[D.vars.indexOf(v) % D.palette.length];
+const X = () => D.x[S.xmode];
+const fmt = v => v == null ? '—' : (Math.abs(v) >= 1000 ? v.toFixed(1) : Math.abs(v) >= 10 ? v.toFixed(2) : v.toFixed(3));
+
+// ---------- helpers ----------
+function validLen(x) { let i = x.indexOf(null); return i < 0 ? x.length : i; }
+function toNum(v) { return typeof v === 'number' ? v : Date.parse(String(v).replace(' ', 'T') + 'Z'); }
+function lower(x, m, v) { let a = 0, b = m; while (a < b) { const c = (a + b) >> 1; if (x[c] < v) a = c + 1; else b = c; } return a; }
+function upper(x, m, v) { let a = 0, b = m; while (a < b) { const c = (a + b) >> 1; if (x[c] <= v) a = c + 1; else b = c; } return a; }
+function visibleIdx() {
+  const x = X(), m = validLen(x);
+  if (!S.range || !m) return [0, D.n - 1];
+  const lo = toNum(S.range[0]), hi = toNum(S.range[1]);
+  return [lower(x, m, Math.min(lo, hi)), Math.max(0, upper(x, m, Math.max(lo, hi)) - 1)];
+}
+function stats(y, i0, i1) {
+  let mn = Infinity, mx = -Infinity, s = 0, c = 0;
+  for (let i = i0; i <= i1; i++) { const v = y[i]; if (v == null) continue; if (v < mn) mn = v; if (v > mx) mx = v; s += v; c++; }
+  return c ? {mn, mx, mean: s / c, c} : null;
+}
+function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
+
+// ---------- controls ----------
+function buildControls() {
+  const xs = $('#xmode');
+  D.xmodes.forEach(m => xs.add(new Option(XLABEL[m], m)));
+  xs.onchange = () => { S.xmode = xs.value; S.range = null; buildPlots(); updateRange(); };
+  if (!HAS_MAP) { $('#lblbase').style.display = 'none'; $('#lblcolor').style.display = 'none'; }
+  const cs = $('#color');
+  cs.add(new Option('(un solo color)', ''));
+  D.vars.forEach(v => cs.add(new Option(v, v)));
+  cs.value = S.color || '';
+  cs.onchange = () => { S.color = cs.value; buildMap(); };
+  $('#base').onchange = () => { S.base = $('#base').value; Plotly.relayout(mapDiv, baseLayout()); };
+  $('#resetz').onclick = () => { S.range = null; panels.forEach(p => Plotly.relayout(p.pg, {'xaxis.autorange': true, 'yaxis.autorange': true})); updateRange(); };
+  $('#allv').onclick = () => { S.vars = D.vars.slice(); buildChips(); buildPlots(); updateRange(); };
+  $('#fity').onchange = () => updateRange();
+  buildChips();
+}
+function buildChips() {
+  const box = $('#chips'); box.innerHTML = '';
+  D.vars.forEach(v => {
+    const c = document.createElement('span');
+    c.className = 'chip' + (S.vars.includes(v) ? ' on' : ''); c.textContent = v;
+    if (S.vars.includes(v)) c.style.background = colorOf(v);
+    c.onclick = () => {
+      if (S.vars.includes(v)) { if (S.vars.length === 1) return; S.vars = S.vars.filter(w => w !== v); }
+      else S.vars = D.vars.filter(w => w === v || S.vars.includes(w));
+      S.big = null; buildChips(); buildPlots(); updateRange();
+    };
+    box.appendChild(c);
+  });
+}
+
+// ---------- plots ----------
+function buildPlots() {
+  const wrap = $('#plots');
+  panels.forEach(p => Plotly.purge(p.plot));
+  wrap.innerHTML = ''; panels = [];
+  const n = S.vars.length;
+  const x = X(), isDate = S.xmode === 'fecha';
+  S.vars.forEach(v => {
+    const color = colorOf(v);
+    const el = document.createElement('div'); el.className = 'panel';
+    el.innerHTML = '<div class="ph"><b></b><span class="val"></span><span class="st"></span><button class="ex" title="Ampliar / reducir">⤢</button></div><div class="pg"><div class="plot"></div><div class="cursor"></div></div>';
+    const b = el.querySelector('b'); b.textContent = v; b.style.color = color;
+    el.querySelector('.ph').onclick = () => toggleBig(v);
+    wrap.appendChild(el);
+    const plot = el.querySelector('.plot');
+    const p = {v, el, plot, pg: plot, cursor: el.querySelector('.cursor'), val: el.querySelector('.val'), st: el.querySelector('.st')};
+    panels.push(p);
+    const layout = {
+      margin: {l: 64, r: 14, t: 8, b: 40}, hovermode: 'x', dragmode: 'zoom', showlegend: false,
+      paper_bgcolor: '#fff', plot_bgcolor: '#fff', font: {size: 11},
+      xaxis: {type: isDate ? 'date' : 'linear', showspikes: true, spikemode: 'across', spikethickness: 1, spikecolor: '#666', spikedash: 'dot', gridcolor: '#e6e9ee', title: {text: XLABEL[S.xmode], font: {size: 11}}, exponentformat: 'none'},
+      yaxis: {title: {text: v, font: {size: 13, color}, standoff: 6}, tickfont: {size: 11, color}, showline: true, linecolor: color, linewidth: 2, gridcolor: '#e6e9ee', zeroline: false}
+    };
+    Plotly.newPlot(plot, [{
+      type: 'scattergl', mode: 'lines+markers', x, y: D.y[v], connectgaps: false,
+      line: {color, width: 1.5}, marker: {size: 3, color}, name: v,
+      hovertemplate: '%{y}<extra>' + v + '</extra>'
+    }], layout, {responsive: true, displaylogo: false, scrollZoom: true,
+      toImageButtonOptions: {format: 'png', filename: D.title + '_' + v, scale: 2},
+      modeBarButtonsToRemove: ['select2d', 'lasso2d']});
+    plot.on('plotly_hover', e => { const pt = e.points && e.points[0]; if (pt) setCursor(pt.pointNumber, plot); });
+    plot.on('plotly_relayout', ed => {
+      if (syncing) return;
+      let r = null, auto = false;
+      if ('xaxis.range[0]' in ed) r = [ed['xaxis.range[0]'], ed['xaxis.range[1]']];
+      else if (ed['xaxis.range']) r = ed['xaxis.range'];
+      else if (ed['xaxis.autorange']) auto = true;
+      else return;
+      syncing = true;
+      Promise.all(panels.filter(o => o !== p).map(o => Plotly.relayout(o.plot, auto ? {'xaxis.autorange': true} : {'xaxis.range': r})))
+        .finally(() => { syncing = false; });
+      S.range = auto ? null : r;
+      updateRange();
+    });
+  });
+  applyBig();
+}
+function toggleBig(v) { S.big = S.big === v ? null : v; applyBig(); }
+function applyBig() {
+  const wrap = $('#plots');
+  wrap.classList.toggle('one', !!S.big);
+  panels.forEach(p => p.el.classList.toggle('big', p.v === S.big));
+  requestAnimationFrame(() => panels.forEach(p => { if (!S.big || p.v === S.big) Plotly.Plots.resize(p.plot); }));
+}
+addEventListener('keydown', e => { if (e.key === 'Escape' && S.big) { S.big = null; applyBig(); } });
+
+// ---------- visible range: stats, Y fit, route highlight ----------
+const updateRange = debounce(() => {
+  const [i0, i1] = visibleIdx();
+  const fit = $('#fity').checked;
+  panels.forEach(p => {
+    const st = stats(D.y[p.v], i0, i1);
+    p.st.textContent = st ? `mín ${fmt(st.mn)} · prom ${fmt(st.mean)} · máx ${fmt(st.mx)} · n=${st.c}` : 'sin datos';
+    if (fit && S.range && st) {
+      const pad = (st.mx - st.mn) * 0.08 || Math.abs(st.mx) * 0.02 || 1;
+      Plotly.relayout(p.plot, {'yaxis.range': [st.mn - pad, st.mx + pad]});
+    } else if (!S.range || !fit) {
+      Plotly.relayout(p.plot, {'yaxis.autorange': true});
+    }
+  });
+  if (HAS_MAP && mapDiv.data) {
+    const full = !S.range;
+    Plotly.restyle(mapDiv, {lat: [full ? [] : D.lat.slice(i0, i1 + 1)], lon: [full ? [] : D.lon.slice(i0, i1 + 1)]}, [HL]);
+  }
+}, 60);
+
+// ---------- cursor shared by plots and map ----------
+let pend = null, raf = 0;
+function setCursor(idx, src) {
+  pend = [idx, src];
+  if (!raf) raf = requestAnimationFrame(() => { raf = 0; applyCursor(pend[0], pend[1]); });
+}
+function applyCursor(idx, src) {
+  const xv = X()[idx];
+  panels.forEach(p => {
+    p.val.textContent = fmt(D.y[p.v][idx]);
+    const xa = p.plot._fullLayout && p.plot._fullLayout.xaxis;
+    if (p.plot === src || xv == null || !xa) { p.cursor.style.display = 'none'; return; }
+    const px = xa._offset + xa.d2p(xv);
+    if (px < xa._offset || px > xa._offset + xa._length) { p.cursor.style.display = 'none'; return; }
+    p.cursor.style.display = 'block'; p.cursor.style.left = px + 'px';
+  });
+  let txt = 'Muestra ' + (idx + 1);
+  if (D.utc && D.utc[idx]) txt += ' · ' + D.utc[idx];
+  if (HAS_MAP && mapDiv.data && D.lat[idx] != null) {
+    Plotly.restyle(mapDiv, {lat: [[D.lat[idx]]], lon: [[D.lon[idx]]]}, [CUR]);
+    txt += ` · ${D.lat[idx].toFixed(6)}, ${D.lon[idx].toFixed(6)}`;
+  }
+  $('#cur').textContent = txt;
+}
+
+// ---------- map ----------
+function baseLayout() {
+  if (S.base === 'sat') return {'map.style': 'white-bg', 'map.layers': [{sourcetype: 'raster', below: 'traces', sourceattribution: 'Esri, Maxar, Earthstar Geographics',
+    source: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}']}]};
+  return {'map.style': 'open-street-map', 'map.layers': []};
+}
+function buildMap() {
+  if (!HAS_MAP) return;
+  const col = S.color ? D.y[S.color] : null;
+  const first = D.lat.findIndex(v => v != null);
+  let last = D.lat.length - 1; while (last > 0 && D.lat[last] == null) last--;
+  const traces = [
+    {type: 'scattermap', mode: 'lines', lat: D.routeLat, lon: D.routeLon, line: {color: '#7a8591', width: 2}, hoverinfo: 'skip'},
+    {type: 'scattermap', mode: 'markers', lat: D.lat, lon: D.lon,
+      marker: col ? {size: 6, color: col, colorscale: 'Viridis', showscale: true, colorbar: {title: {text: S.color}, thickness: 12, len: 0.6, x: 0.99, xanchor: 'right', bgcolor: 'rgba(255,255,255,.8)'}} : {size: 6, color: '#c1121f'},
+      hovertemplate: (col ? S.color + ': %{marker.color}<br>' : '') + '%{lat:.6f}, %{lon:.6f}<extra></extra>'},
+    {type: 'scattermap', mode: 'lines', lat: [], lon: [], line: {color: '#ff7f0e', width: 5}, hoverinfo: 'skip'},
+    {type: 'scattermap', mode: 'markers', lat: [], lon: [], marker: {size: 15, color: '#fff', opacity: 0.95}, hoverinfo: 'skip'},
+    {type: 'scattermap', lat: [D.lat[first], D.lat[last]], lon: [D.lon[first], D.lon[last]], mode: 'markers+text', marker: {size: 30, color: 'rgba(255,255,255,0.92)'}, text: [D.startIcon, D.endIcon], textposition: 'middle center', textfont: {size: 18}, customdata: ['Inicio', 'Fin'], hovertemplate: '%{customdata}<extra></extra>'}
+  ];
+  const b = D.bounds;
+  const layout = {margin: {l: 0, r: 0, t: 0, b: 0}, showlegend: false, uirevision: 'keep',
+    map: {bounds: b, style: 'open-street-map'}};
+  const base = baseLayout();
+  layout.map.style = base['map.style']; layout.map.layers = base['map.layers'];
+  try {
+    Plotly.react(mapDiv, traces, layout, {responsive: true, scrollZoom: true, displaylogo: false});
+  } catch (err) {
+    const m = $('#mapmsg'); m.style.display = 'block'; m.textContent = 'No se pudo dibujar el mapa: ' + err.message;
+    console.error(err);
+  }
+  if (!mapDiv._bound) {
+    mapDiv._bound = true;
+    mapDiv.on('plotly_hover', e => { const pt = e.points && e.points[0]; if (pt && pt.curveNumber === MARK) setCursor(pt.pointNumber, null); });
+    mapDiv.on('plotly_click', e => { const pt = e.points && e.points[0]; if (pt && pt.curveNumber === MARK) setCursor(pt.pointNumber, null); });
+  }
+}
+
+// ---------- start ----------
+$('#main').classList.toggle('withmap', HAS_MAP);
+if (!HAS_MAP) $('#mapwrap').style.display = 'none';
+buildControls();
+buildPlots();
+updateRange();
+// The map needs the final layout size, so build it after the first paint.
+setTimeout(buildMap, 50);
+</script>
+</body>
+</html>

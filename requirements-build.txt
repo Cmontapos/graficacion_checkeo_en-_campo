@@ -1,0 +1,4 @@
+-r requirements.txt
+pillow>=10
+requests>=2.31
+pyinstaller>=6.6
