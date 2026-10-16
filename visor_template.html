@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
+<meta name="referrer" content="origin">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <style>
@@ -68,7 +69,7 @@ const D = __DATA__;
 const $ = s => document.querySelector(s);
 const XLABEL = {fecha:'Fecha y hora', transcurrido:'Tiempo transcurrido (s)', indice:'Número de muestra'};
 const HAS_MAP = !!D.lat;
-const S = {vars: D.defaultVars.slice(), xmode: D.xmodes[0], color: D.defaultColor, base: 'osm', big: null, range: null};
+const S = {vars: D.defaultVars.slice(), xmode: D.xmodes[0], color: D.defaultColor, base: location.protocol === 'file:' ? 'sat' : 'osm', big: null, range: null};
 const LINE = 0, MARK = 1, HL = 2, CUR = 3, SE = 4;
 const mapDiv = $('#map');
 let panels = [];
@@ -106,6 +107,7 @@ function buildControls() {
   D.vars.forEach(v => cs.add(new Option(v, v)));
   cs.value = S.color || '';
   cs.onchange = () => { S.color = cs.value; buildMap(); };
+  $('#base').value = S.base;
   $('#base').onchange = () => { S.base = $('#base').value; Plotly.relayout(mapDiv, baseLayout()); };
   $('#resetz').onclick = () => { S.range = null; panels.forEach(p => Plotly.relayout(p.pg, {'xaxis.autorange': true, 'yaxis.autorange': true})); updateRange(); };
   $('#allv').onclick = () => { S.vars = D.vars.slice(); buildChips(); buildPlots(); updateRange(); };
@@ -230,8 +232,12 @@ function applyCursor(idx, src) {
 
 // ---------- map ----------
 function baseLayout() {
-  if (S.base === 'sat') return {'map.style': 'white-bg', 'map.layers': [{sourcetype: 'raster', below: 'traces', sourceattribution: 'Esri, Maxar, Earthstar Geographics',
-    source: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}']}]};
+  // Esri no tiene imagenes mas alla del nivel 18 en muchas zonas (devuelve "Map data not yet available"):
+  // con maxzoom en la fuente, el mapa amplia el ultimo nivel en vez de pedir tiles vacios.
+  if (S.base === 'sat') return {'map.style': {version: 8, glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
+    sources: {esri: {type: 'raster', tileSize: 256, maxzoom: 18, attribution: 'Esri, Maxar, Earthstar Geographics',
+      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}']}},
+    layers: [{id: 'esri', type: 'raster', source: 'esri'}]}, 'map.layers': []};
   return {'map.style': 'open-street-map', 'map.layers': []};
 }
 function buildMap() {

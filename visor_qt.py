@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import io
 import math
 import sys
@@ -20,16 +21,17 @@ pg.setConfigOptions(imageAxisOrder='row-major', antialias=False, background='w',
 
 WORLD = 2 * math.pi * 6378137.0
 PROVIDERS = {
-    'OpenStreetMap': ('osm', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', '© OpenStreetMap contributors'),
-    'Satélite (Esri)': ('esri', 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 'Esri, Maxar, Earthstar Geographics'),
+    'OpenStreetMap': ('osm', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', '© OpenStreetMap contributors', 19),
+    'Satélite (Esri)': ('esri', 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 'Esri, Maxar, Earthstar Geographics', 18),
 }
 X_LABELS = {'fecha': 'Fecha y hora', 'transcurrido': 'Tiempo transcurrido (s)', 'indice': 'Número de muestra'}
+COVER_CELLS = (5, 10, 25, 50, 100, 250)
 CACHE = Path.home() / '.cache' / 'gaslab_tiles'
 
 
 def fetch_tile(provider, z, x, y):
     """RGB uint8 array of one tile (disk cached), or None when offline."""
-    name, url, _ = provider
+    name, url = provider[:2]
     file = CACHE / name / str(z) / str(x) / f'{y}.png'
     try:
         from PIL import Image
@@ -87,7 +89,7 @@ class TileLayer(QtCore.QObject):
         width = max(1, self.view.width())
         if x1 <= x0 or not np.isfinite(x1 - x0):
             return
-        z = int(np.clip(round(math.log2(WORLD / (256 * (x1 - x0) / width))), 1, 19))
+        z = int(np.clip(round(math.log2(WORLD / (256 * (x1 - x0) / width))), 1, self.provider[3]))  # sobre el maximo se amplia el ultimo nivel
         while True:
             n = 2 ** z
             tx0, tx1 = (int(np.clip(math.floor((v + WORLD / 2) / WORLD * n), 0, n - 1)) for v in (x0, x1))
@@ -189,12 +191,16 @@ class Viewer(QtWidgets.QMainWindow):
         self.data = None
         self.plots, self.selected, self.big = [], [], None
         self.xmode, self.range = 'fecha', None
+        self.days, self.hours, self.intervals = {}, {}, []
+        self.window = None  # (i0, i1): tramo elegido; limita el mapa y la ampliacion de las graficas
         self._building = False
         self.path = None
         self.settings = QtCore.QSettings('GasLab', 'VisorRapido')
+        self.fontsize = int(self.settings.value('fontsize', 12))
         self.night = str(self.settings.value('night', 'false')).lower() == 'true'
         self.muted = '#262c33'
         self._build_ui()
+        self.apply_font()
         self.apply_theme()
         self.range_timer = QtCore.QTimer(singleShot=True, interval=60, timeout=self.on_range)
         self.tile_timer = QtCore.QTimer(singleShot=True, interval=150, timeout=lambda: self.tiles.update())
@@ -222,6 +228,62 @@ class Viewer(QtWidgets.QMainWindow):
         self.fity.setChecked(True)
         self.fity.toggled.connect(lambda _: self.on_range())
         bar.addWidget(self.fity)
+        self.addToolBarBreak()
+        bar = self.addToolBar('Intervalo')
+        bar.setMovable(False)
+        bar.addWidget(QtWidgets.QLabel(' Inactividad > '))
+        self.gapbox = QtWidgets.QSpinBox()
+        self.gapbox.setRange(1, 86400)
+        self.gapbox.setValue(60)
+        self.gapbox.setSuffix(' s')
+        self.gapbox.setToolTip('Una pausa mayor a este tiempo entre dos muestras divide la medición en otro tramo')
+        self.gapbox.valueChanged.connect(self.compute_intervals)
+        bar.addWidget(self.gapbox)
+        bar.addWidget(QtWidgets.QLabel(' Tramo '))
+        self.intervalbox = QtWidgets.QComboBox()
+        self.intervalbox.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self.intervalbox.setToolTip('Tramos continuos de la medición; limita las gráficas y el mapa al tramo elegido')
+        self.intervalbox.currentIndexChanged.connect(self.on_interval)
+        bar.addWidget(self.intervalbox)
+        bar.addAction('Todo', self.clear_window)
+        self.addToolBarBreak()
+        bar = self.addToolBar('Vista')
+        bar.setMovable(False)
+        bar.addWidget(QtWidgets.QLabel(' Día '))
+        self.daybox = QtWidgets.QComboBox()
+        self.daybox.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self.daybox.setToolTip('Días con mediciones; elige uno para ampliar las gráficas a ese día')
+        self.daybox.currentIndexChanged.connect(self.on_day)
+        bar.addWidget(self.daybox)
+        bar.addWidget(QtWidgets.QLabel(' de '))
+        self.hfrom = QtWidgets.QComboBox()
+        self.hfrom.setToolTip('Hora de inicio (solo horas con mediciones del día elegido)')
+        self.hfrom.currentIndexChanged.connect(self.on_hour_from)
+        bar.addWidget(self.hfrom)
+        bar.addWidget(QtWidgets.QLabel(' a '))
+        self.hto = QtWidgets.QComboBox()
+        self.hto.setToolTip('Hora de fin')
+        self.hto.currentIndexChanged.connect(self.on_hour_to)
+        bar.addWidget(self.hto)
+        bar.addSeparator()
+        bar.addWidget(QtWidgets.QLabel(' Letra '))
+        self.fontbox = QtWidgets.QSpinBox()
+        self.fontbox.setRange(8, 28)
+        self.fontbox.setValue(self.fontsize)
+        self.fontbox.setSuffix(' pt')
+        self.fontbox.valueChanged.connect(self.set_fontsize)
+        bar.addWidget(self.fontbox)
+        bar.addSeparator()
+        self.coverbox = QtWidgets.QCheckBox('Cobertura')
+        self.coverbox.setToolTip('Mapa de calor: qué porcentaje de las muestras cae en cada celda del mapa')
+        self.coverbox.toggled.connect(self.update_coverage)
+        bar.addWidget(self.coverbox)
+        self.cellbox = QtWidgets.QComboBox()
+        for meters in COVER_CELLS:
+            self.cellbox.addItem(f'celda {meters} m', meters)
+        self.cellbox.setCurrentIndex(COVER_CELLS.index(25))
+        self.cellbox.currentIndexChanged.connect(self.update_coverage)
+        bar.addWidget(self.cellbox)
         bar.addSeparator()
         self.nightbox = QtWidgets.QCheckBox('Modo noche')
         self.nightbox.setChecked(self.night)
@@ -246,6 +308,10 @@ class Viewer(QtWidgets.QMainWindow):
         self.attribution = QtWidgets.QLabel('Mapa: ' + PROVIDERS['OpenStreetMap'][2])
         self.attribution.setStyleSheet('color:#5b6570;font-size:10px')
         lay.addWidget(self.legend)
+        self.cover_legend = QtWidgets.QLabel()
+        self.cover_legend.setWordWrap(True)
+        self.cover_legend.hide()
+        lay.addWidget(self.cover_legend)
         lay.addWidget(self.attribution)
         self.left = left
         self.tiles = TileLayer(self.view)
@@ -291,6 +357,11 @@ class Viewer(QtWidgets.QMainWindow):
         self.dock = dock
         # map layers
         self.route = pg.PlotDataItem(pen=pg.mkPen('#7a8591', width=2), connect='finite')
+        self.cover = pg.ImageItem()
+        self.cover.hide()
+        self.view.addItem(self.cover)
+        self.cover.setZValue(-50)  # after addItem (ViewBox resets it): above the tiles, below the route
+        self.cover_grid = None
         self.points = pg.ScatterPlotItem(size=6, pen=None)
         self.highlight = pg.PlotDataItem(pen=pg.mkPen('#ff7f0e', width=5), connect='finite')
         self.map_cursor = pg.ScatterPlotItem(size=16, brush=pg.mkBrush('w'), pen=pg.mkPen('k', width=2))
@@ -346,11 +417,13 @@ class Viewer(QtWidgets.QMainWindow):
         self.colorbox.addItems(['(un solo color)'] + data.vars)
         self.colorbox.setCurrentText('co2_ppm' if 'co2_ppm' in data.vars else (default[0] if default else '(un solo color)'))
         self.colorbox.blockSignals(False)
-        self.range, self.big = None, None
+        self.range, self.big, self.window = None, None, None
         self.left.setVisible(data.has_gps)
         self.build_map()
         self.build_plots()
-        self.info.setText(f'{data.n:,} filas · {g.short_name(path)}')
+        self.compute_days()
+        self.compute_intervals()
+        self.info.setText(f'{data.n:,} filas · {len(self.days)} días · {g.short_name(path)}')
 
     def color_of(self, name):
         color = g.PALETTE[self.data.vars.index(name) % len(g.PALETTE)] if self.data else '#007f86'
@@ -383,7 +456,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.cursor_color = '#d0d5db' if night else '#555'
         self.tip.setStyleSheet(('background:rgba(27,32,38,240);border:1px solid #7d8794;color:#e6e9ee;' if night else
                                 'background:rgba(255,255,255,235);border:1px solid #888;color:#1b1f24;') + 'border-radius:5px;padding:5px 8px')
-        self.attribution.setStyleSheet(f'color:{self.muted};font-size:10px')
+        self.attribution.setStyleSheet(f'color:{self.muted};font-size:{max(self.fontsize - 2, 7)}pt')
         self.tiles.set_night(night)
 
     def set_night(self, flag):
@@ -401,18 +474,36 @@ class Viewer(QtWidgets.QMainWindow):
         d = self.data
         if not d.has_gps:
             return
-        self.route.setData(*d.route)
-        valid = np.flatnonzero(np.isfinite(d.mx))
+        if self.window is None:
+            self.route.setData(*d.route)
+            inside = np.ones(d.n, bool)
+        else:
+            i0, i1 = self.window
+            inside = np.zeros(d.n, bool)
+            inside[i0:i1 + 1] = True
+            x, y = d.mx[i0:i1 + 1], d.my[i0:i1 + 1]
+            t = d.x.get('fecha', d.x.get('transcurrido'))
+            if t is not None and len(x) > 1:  # la ruta no une puntos separados por una pausa larga
+                cut = np.flatnonzero(np.diff(t[i0:i1 + 1]) > self.gapbox.value()) + 1
+                x, y = np.insert(x, cut, np.nan), np.insert(y, cut, np.nan)
+            self.route.setData(x, y)
+        valid = np.flatnonzero(np.isfinite(d.mx) & inside)
         self.valid_pts = valid
         keep = valid[np.linspace(0, len(valid) - 1, min(len(valid), 4000)).astype(int)] if len(valid) else valid
         self.marker_idx = np.unique(keep)
         self.recolor()
-        first, last = valid[0], valid[-1]
-        for badge, i in zip(self.ends, (first, last)):
+        self.update_coverage()
+        for badge in self.ends:
+            badge.setVisible(len(valid) > 0)
+        if not len(valid):
+            self.map_cursor.setData([], [])
+            return
+        for badge, i in zip(self.ends, (valid[0], valid[-1])):
             badge.setPos(d.mx[i], d.my[i])
-        pad_x = max((np.nanmax(d.mx) - np.nanmin(d.mx)) * 0.12, 60)
-        pad_y = max((np.nanmax(d.my) - np.nanmin(d.my)) * 0.12, 60)
-        self.view.setRange(xRange=(np.nanmin(d.mx) - pad_x, np.nanmax(d.mx) + pad_x), yRange=(np.nanmin(d.my) - pad_y, np.nanmax(d.my) + pad_y), padding=0)
+        mx, my = d.mx[valid], d.my[valid]
+        pad_x = max((mx.max() - mx.min()) * 0.12, 60)
+        pad_y = max((my.max() - my.min()) * 0.12, 60)
+        self.view.setRange(xRange=(mx.min() - pad_x, mx.max() + pad_x), yRange=(my.min() - pad_y, my.max() + pad_y), padding=0)
         self.tile_timer.start()
 
     def recolor(self, *_):
@@ -420,6 +511,11 @@ class Viewer(QtWidgets.QMainWindow):
         if not d or not d.has_gps:
             return
         idx = self.marker_idx
+        if not len(idx):
+            self.points.setData([], [])
+            self.legend.setText('')
+            self.legend.setStyleSheet('')
+            return
         name = self.colorbox.currentText()
         if name in d.y:
             values = d.y[name][idx]
@@ -435,7 +531,214 @@ class Viewer(QtWidgets.QMainWindow):
             self.legend.setText('')
             self.legend.setStyleSheet('')
 
+    def update_coverage(self, *_):
+        """Heat map: the map is split into square cells and each is colored by its share of all GPS samples."""
+        d = self.data
+        on = self.coverbox.isChecked() and d is not None and d.has_gps and len(self.valid_pts) > 0
+        self.cover.setVisible(on)
+        self.cover_legend.setVisible(on)
+        self.cover_grid = None
+        if not on:
+            return
+        meters = self.cellbox.currentData()
+        idx = self.valid_pts
+        cell = meters / math.cos(math.radians(float(np.nanmean(d.lat[idx]))))  # Mercator units per cell
+        x, y = d.mx[idx], d.my[idx]
+        x0, y0 = math.floor(x.min() / cell) * cell, math.floor(y.min() / cell) * cell
+        nx, ny = int((x.max() - x0) // cell) + 1, int((y.max() - y0) // cell) + 1
+        if nx * ny > 4_000_000:
+            self.cover.hide()
+            self.cover_legend.setText('Cobertura: demasiadas celdas; elige una celda más grande.')
+            return
+        counts = np.zeros((ny, nx))
+        np.add.at(counts, (((y - y0) // cell).astype(int), ((x - x0) // cell).astype(int)), 1)
+        share = counts / len(idx) * 100
+        top = share.max()
+        rgba = pg.colormap.get('inferno').map(share / top, mode='byte').astype(np.uint8)
+        rgba[..., 3] = np.where(counts > 0, 200, 0)
+        self.cover.setImage(rgba, levels=(0, 255), autoLevels=False)
+        self.cover.setRect(QtCore.QRectF(x0, y0, nx * cell, ny * cell))
+        self.cover_grid = (x0, y0, cell, counts, share)
+        inferno = pg.colormap.get('inferno')
+        stops = ', '.join(f'stop:{t:.2f} rgb({r},{gg},{b})' for t, (r, gg, b, _) in zip(np.linspace(0, 1, 6), inferno.map(np.linspace(0, 1, 6), mode='byte')))
+        self.cover_base = f'Cobertura · celdas de {meters} m · {int((counts > 0).sum()):,} con datos · 0 → {top:.1f}% de {len(idx):,} muestras'
+        self.cover_legend.setText(self.cover_base)
+        self.cover_legend.setStyleSheet(f'color:white;font-weight:600;padding:2px 8px;background:qlineargradient(x1:0,y1:0,x2:1,y2:0,{stops})')
+
+    def cover_hover(self, pt):
+        if self.cover_grid is None:
+            return
+        x0, y0, cell, counts, share = self.cover_grid
+        col, row = int((pt.x() - x0) // cell), int((pt.y() - y0) // cell)
+        if 0 <= row < counts.shape[0] and 0 <= col < counts.shape[1]:
+            self.cover_legend.setText(f'{self.cover_base} · bajo el cursor: {int(counts[row, col]):,} muestras ({share[row, col]:.2f}%)')
+        else:
+            self.cover_legend.setText(self.cover_base)
+
     # ---------- plots ----------
+    # ---------- day / hour ----------
+    # Ver CHANGELOG.md (2026-10-14, "Día y hora") y la seccion "Día y hora" del README antes de cambiar esto.
+    def compute_days(self):
+        """Llena el selector de dias con los dias que tienen muestras (hora local de la zona elegida)."""
+        d = self.data
+        self.days = {}
+        self.daybox.blockSignals(True)
+        self.daybox.clear()
+        t = d.x.get('fecha') if d is not None else None
+        if t is not None:
+            t = t[np.isfinite(t)]
+            day_index = np.floor(t / 86400).astype(np.int64)
+            self.daybox.addItem(f'Todos los días ({len(np.unique(day_index))})')
+            for day in np.unique(day_index):
+                inside = np.flatnonzero(day_index == day)
+                self.days[len(self.days) + 1] = (int(day), int(inside[0]), int(inside[-1]))
+                date = datetime.datetime.fromtimestamp(int(day) * 86400, tz=datetime.timezone.utc)
+                self.daybox.addItem(f'{date:%d/%m/%Y} · {len(inside):,} muestras')
+        self.daybox.setEnabled(bool(self.days))
+        self.daybox.blockSignals(False)
+        self.fill_hours(0)
+
+    def fill_hours(self, day_row):
+        """Horas con muestras del dia elegido; 'de' lista inicios de hora y 'a' lista finales (hora + 1)."""
+        d = self.data
+        self.hours = []  # (hora, i0, i1)
+        for box in (self.hfrom, self.hto):
+            box.blockSignals(True)
+            box.clear()
+        if day_row in self.days:
+            t = d.x['fecha'][np.isfinite(d.x['fecha'])]
+            day, i0, i1 = self.days[day_row]
+            hour_index = np.floor((t[i0:i1 + 1] - day * 86400) / 3600).astype(int)
+            for hour in np.unique(hour_index):
+                inside = np.flatnonzero(hour_index == hour) + i0
+                self.hours.append((int(hour), int(inside[0]), int(inside[-1])))
+                self.hfrom.addItem(f'{hour:02d}:00')
+                self.hto.addItem(f'{hour + 1:02d}:00')
+            self.hto.setCurrentIndex(len(self.hours) - 1)
+        for box in (self.hfrom, self.hto):
+            box.setEnabled(bool(self.hours))
+            box.blockSignals(False)
+
+    def zoom_rows(self, i0, i1):
+        """Amplia las graficas a las muestras i0..i1 (indices de la serie ordenada por tiempo)."""
+        i0, i1 = min(i0, self.m - 1), min(i1, self.m - 1)
+        lo, hi = float(self.xv[i0]), float(self.xv[i1])
+        pad = (hi - lo) * 0.02 or 1.0
+        self.plots[0]['pi'].setXRange(lo - pad, hi + pad, padding=0)
+
+    def on_day(self, row):
+        if not self.plots or row < 0:
+            return
+        self.fill_hours(row)
+        self.reset_box(self.intervalbox)
+        if row in self.days:
+            self.apply_window(*self.days[row][1:])
+        else:
+            self.clear_window()
+
+    def on_hour_from(self, row):
+        if row < 0 or not self.hours:
+            return
+        if self.hto.currentIndex() < row:  # el fin no puede quedar antes del inicio
+            self.hto.blockSignals(True)
+            self.hto.setCurrentIndex(row)
+            self.hto.blockSignals(False)
+        self.apply_hours()
+
+    def on_hour_to(self, row):
+        if row < 0 or not self.hours:
+            return
+        if self.hfrom.currentIndex() > row:
+            self.hfrom.blockSignals(True)
+            self.hfrom.setCurrentIndex(row)
+            self.hfrom.blockSignals(False)
+        self.apply_hours()
+
+    def apply_hours(self):
+        """Ventana = desde el inicio de la hora 'de' hasta el final de la hora 'a'."""
+        if not self.plots:
+            return
+        self.reset_box(self.intervalbox)
+        self.apply_window(self.hours[self.hfrom.currentIndex()][1], self.hours[self.hto.currentIndex()][2])
+
+    def compute_intervals(self, *_):
+        """Tramos continuos: una pausa mayor a 'Inactividad' entre dos muestras abre un tramo nuevo."""
+        d = self.data
+        self.intervals = []
+        self.intervalbox.blockSignals(True)
+        self.intervalbox.clear()
+        t = d.x.get('fecha') if d is not None else None
+        if t is not None:
+            t = t[np.isfinite(t)]
+            if len(t):
+                cuts = np.flatnonzero(np.diff(t) > self.gapbox.value()) + 1
+                self.intervals = list(zip(np.concatenate(([0], cuts)).tolist(), np.concatenate((cuts - 1, [len(t) - 1])).tolist()))
+            self.intervalbox.addItem(f'Todo · {len(self.intervals)} tramos')
+            for k, (i0, i1) in enumerate(self.intervals, 1):
+                a, b = (datetime.datetime.fromtimestamp(v, tz=datetime.timezone.utc) for v in (t[i0], t[i1]))
+                span = f'{a:%d/%m %H:%M:%S} → {b:%H:%M:%S}' if a.date() == b.date() else f'{a:%d/%m %H:%M} → {b:%d/%m %H:%M}'
+                secs = int(t[i1] - t[i0])
+                dur = f'{secs // 3600} h {secs % 3600 // 60:02d} min' if secs >= 3600 else f'{secs // 60} min {secs % 60:02d} s'
+                self.intervalbox.addItem(f'{k} · {span} · {dur} · {i1 - i0 + 1:,} muestras')
+        self.intervalbox.setEnabled(bool(self.intervals))
+        self.gapbox.setEnabled(t is not None)
+        self.intervalbox.blockSignals(False)
+
+    def on_interval(self, row):
+        if not self.plots or row < 0:
+            return
+        self.reset_box(self.daybox, hours=True)
+        if 1 <= row <= len(self.intervals):
+            self.apply_window(*self.intervals[row - 1])
+        else:
+            self.clear_window()
+
+    def reset_box(self, box, hours=False):
+        box.blockSignals(True)
+        box.setCurrentIndex(0)
+        box.blockSignals(False)
+        if hours:
+            self.fill_hours(0)
+
+    def apply_window(self, i0, i1):
+        """Limita las graficas (zoom) y el mapa (ruta, puntos, cobertura) a las muestras i0..i1."""
+        d = self.data
+        i0, i1 = max(0, i0), min(i1, self.m - 1)
+        self.window = (i0, i1)
+        self.zoom_rows(i0, i1)
+        self.build_map()
+        n = i1 - i0 + 1
+        self.info.setText(f'Tramo: {n:,} muestras' + (f' · {d.utc[i0]} → {d.utc[i1]} UTC' if d.utc is not None else ''))
+
+    def clear_window(self):
+        if not self.data:
+            return
+        self.window = None
+        self.reset_box(self.daybox, hours=True)
+        self.reset_box(self.intervalbox)
+        self.build_map()
+        if self.plots:
+            self.reset_zoom()
+        self.info.setText(f'{self.data.n:,} filas · {g.short_name(self.path)}')
+
+    # ---------- font size ----------
+    def set_fontsize(self, size):
+        self.fontsize = int(size)
+        self.settings.setValue('fontsize', self.fontsize)
+        self.apply_font()
+        if self.data:
+            self.build_plots()
+
+    def apply_font(self):
+        size = self.fontsize
+        font = QtGui.QFont(QtWidgets.QApplication.instance().font())
+        font.setPointSize(size)
+        QtWidgets.QApplication.instance().setFont(font)
+        self.setFont(font)
+        for label in (self.legend, self.cover_legend, self.attribution, self.info):
+            label.setFont(font)
+        self.attribution.setStyleSheet(f'color:{self.muted};font-size:{max(size - 2, 7)}pt')
+
     def on_xmode(self, label):
         if not self.data:
             return
@@ -475,12 +778,12 @@ class Viewer(QtWidgets.QMainWindow):
             pi = pg.PlotItem(axisItems=axis)
             pi.showGrid(x=True, y=True, alpha=0.3)
             pi.setMinimumSize(60, 60)  # lets the panels shrink with the window instead of overflowing
-            pi.setLabel('left', name, color=color, **{'font-size': '10pt', 'font-weight': 'bold'})
+            pi.setLabel('left', name, color=color, **{'font-size': f'{self.fontsize}pt', 'font-weight': 'bold'})
             left = pi.getAxis('left')
             left.setPen(pg.mkPen(color, width=2))
             left.setTextPen(pg.mkPen(color))
             small = QtGui.QFont(self.font())
-            small.setPointSize(8)
+            small.setPointSize(max(self.fontsize - 1, 7))
             for side in ('left', 'bottom'):
                 pi.getAxis(side).setStyle(tickFont=small, tickTextOffset=4)
             left.setWidth(58)
@@ -500,19 +803,22 @@ class Viewer(QtWidgets.QMainWindow):
             self.plots.append(p)
             self.refresh_title(p)
         self.layout_plots()
-        self.reset_zoom()
+        if self.window and self.plots:
+            self.zoom_rows(*self.window)
+        else:
+            self.reset_zoom()
 
     def layout_plots(self):
         self.glw.ci.clear()
         shown = [p for p in self.plots if self.big is None or p is self.big]
         ncols = 1 if self.big else (self.plots[0]['ncols'] if self.plots else 1)
-        self.glw.setMinimumHeight(0 if self.big else 260 * math.ceil(len(shown) / ncols))
+        self.glw.setMinimumHeight(0 if self.big else int(26 * self.fontsize) * math.ceil(len(shown) / ncols))
         for i, p in enumerate(shown):
             self.glw.ci.addItem(p['pi'], row=i // ncols, col=i % ncols)
 
     def refresh_title(self, p):
-        p['pi'].setTitle(f'<span style="color:{p["color"]};font-size:10pt"><b>{p["name"]}</b> {p["val"]}</span> '
-                         f'<br><span style="color:{self.muted};font-size:8pt">{p["stat"]}</span>')
+        p['pi'].setTitle(f'<span style="color:{p["color"]};font-size:{self.fontsize}pt"><b>{p["name"]}</b> {p["val"]}</span> '
+                         f'<br><span style="color:{self.muted};font-size:{max(self.fontsize - 2, 7)}pt">{p["stat"]}</span>')
 
     def reset_zoom(self):
         self.range = None
@@ -572,7 +878,8 @@ class Viewer(QtWidgets.QMainWindow):
             p['curve'].setSymbol('o' if i1 - i0 < 400 else None)
             self.refresh_title(p)
         if self.data.has_gps:
-            if zoomed:
+            base = (self.window[1] - self.window[0] + 1) if self.window else self.m  # el tramo elegido ya es el mapa completo
+            if zoomed and (i1 - i0 + 1) < 0.9 * base:
                 self.highlight.setData(self.data.mx[i0:i1 + 1], self.data.my[i0:i1 + 1])
             else:
                 self.highlight.setData([], [])
@@ -600,7 +907,7 @@ class Viewer(QtWidgets.QMainWindow):
         if height:
             rows.append(('Altitud', f'{fmt(d.y[height][i])} m'))
         body = ''.join(f'<tr><td style="color:{self.muted};padding-right:10px">{k}</td><td><b>{v}</b></td></tr>' for k, v in rows)
-        return f'<table style="font-size:9pt"><tr><td colspan="2" style="color:{p["color"]}"><b>Muestra {i + 1}</b></td></tr>{body}</table>'
+        return f'<table style="font-size:{max(self.fontsize - 1, 7)}pt"><tr><td colspan="2" style="color:{p["color"]}"><b>Muestra {i + 1}</b></td></tr>{body}</table>'
 
     def show_tip(self, p, i, pos):
         self.tip.setText(self.tip_html(p, i))
@@ -633,6 +940,7 @@ class Viewer(QtWidgets.QMainWindow):
         if not d or not d.has_gps or not self.view.sceneBoundingRect().contains(pos):
             return
         pt = self.view.mapSceneToView(pos)
+        self.cover_hover(pt)
         idx = self.valid_pts
         dist = np.hypot(d.mx[idx] - pt.x(), d.my[idx] - pt.y())
         k = int(np.argmin(dist))

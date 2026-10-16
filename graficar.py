@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
+import io
 import re
 import sys
 from pathlib import Path
@@ -34,7 +36,25 @@ def numeric(series):
 
 
 def load_csv(path, only_new=False, time_column=None, unit='auto'):
-    frame = pd.read_csv(path, sep=None, engine='python', encoding='utf-8-sig')
+    if Path(path).stat().st_size == 0:
+        raise ValueError(f'El archivo {Path(path).name} está vacío (0 bytes): no tiene encabezado ni datos.')
+    source = path
+    raw = Path(path).read_bytes()
+    if b'\x00' in raw:
+        # Escritura interrumpida (SD/USB): bloques de bytes nulos. Se quitan y se descartan las filas
+        # que quedaron truncadas (con distinta cantidad de campos que el encabezado).
+        lines = raw.replace(b'\x00', b'').decode('utf-8-sig', errors='replace').splitlines()
+        lines = [line for line in lines if line.strip()]
+        if not lines:
+            raise ValueError(f'El archivo {Path(path).name} solo contiene bytes nulos: no hay datos.')
+        sep = max((',', ';', '\t'), key=lines[0].count)
+        width = lines[0].count(sep)
+        good = [lines[0]] + [line for line in lines[1:] if line.count(sep) == width]
+        source = io.StringIO('\n'.join(good))
+    try:
+        frame = pd.read_csv(source, sep=None, engine='python', encoding='utf-8-sig')
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, csv.Error) as exc:
+        raise ValueError(f'No se pudo leer {Path(path).name} como CSV: {exc}') from exc
     frame.columns = frame.columns.str.strip()
     if frame.columns.duplicated().any():
         raise ValueError('El CSV tiene nombres de columnas repetidos.')
@@ -135,7 +155,7 @@ def make_map(frame, output, time_column='fecha_hora_utc', zone=DEFAULT_ZONE, uni
     first, last = points[0], points[-1]
     # xyzservices supplies the provider URL and attribution through Folium.
     map_view = folium.Map(location=first[1:], zoom_start=17, tiles='OpenStreetMap', control_scale=True, prefer_canvas=True)
-    folium.TileLayer('Esri.WorldImagery', name='Satélite').add_to(map_view)
+    folium.TileLayer('Esri.WorldImagery', name='Satélite', max_native_zoom=18, max_zoom=21).add_to(map_view)
     for segment in segments:
         if len(segment) > 1:
             folium.PolyLine([p[1:] for p in segment], color='#00ffff', weight=3).add_to(map_view)
@@ -240,6 +260,33 @@ def launch_qt(path, columns=None, time_column=None, zone=DEFAULT_ZONE, unit='aut
     return subprocess.Popen(command)
 
 
+def serve_local(path):
+    """Sirve un HTML en http://127.0.0.1 y devuelve su URL.
+
+    OpenStreetMap bloquea los tiles pedidos sin Referer, y una pagina abierta como file:// no envia ninguno;
+    desde http://127.0.0.1 el navegador si lo envia. El hilo es daemon: vive mientras viva la aplicacion."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    body = Path(path).read_bytes()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            ok = self.path.split('?')[0] == '/'
+            self.send_response(200 if ok else 404)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body) if ok else 0))
+            self.end_headers()
+            if ok:
+                self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f'http://127.0.0.1:{server.server_address[1]}/'
+
+
 def gui():
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
@@ -309,7 +356,7 @@ def gui():
             elif action == 'web':
                 chosen = [variables.get(i) for i in variables.curselection()]
                 output = make_viewer(frame, Path(tempfile.gettempdir()) / f'gaslab_{short_name(source.get())}.html', chosen, time_col.get(), zone.get(), unit.get(), short_name(source.get()))
-                webbrowser.open(output.as_uri())
+                webbrowser.open(serve_local(output))
                 status.set(f'Vista interactiva abierta en el navegador ({output.name}).')
             elif action == 'mapa':
                 destination = filedialog.asksaveasfilename(defaultextension='.html', initialfile=short_name(source.get()) + '_ruta.html', filetypes=[('Mapa HTML', '*.html')])
