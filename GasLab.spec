@@ -9,7 +9,7 @@ a = Analysis(
     ['graficar.py'],
     pathex=[],
     datas=datas,
-    hiddenimports=['tzdata', 'visor_qt', 'PIL', 'requests'],
+    hiddenimports=['tzdata', 'visor_qt', 'mapa_calor', 'PIL', 'requests', 'xlsxwriter'],
     excludes=['PyQt6', 'PySide2', 'PySide6', 'matplotlib', 'IPython', 'pytest'],
 )
 pyz = PYZ(a.pure)

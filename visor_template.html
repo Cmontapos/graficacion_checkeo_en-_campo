@@ -15,6 +15,10 @@
   header label { color:var(--muted); display:flex; align-items:center; gap:6px; }
   select, button { font:inherit; padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); cursor:pointer; }
   button:hover, select:hover { border-color:var(--accent); }
+  /* botones de la barra: relieve y relleno para distinguirlos de los selectores y del texto */
+  header button { padding:5px 14px; font-weight:600; border:1px solid #7d8a96; background:linear-gradient(#fff, #e3e9ee); box-shadow:0 1px 2px rgba(0,0,0,.22); }
+  header button:hover { background:linear-gradient(#f2fbfb, #cfe7e8); border-color:var(--accent); }
+  header button:active { background:#c3dcde; box-shadow:inset 0 1px 2px rgba(0,0,0,.25); transform:translateY(1px); }
   #chips { display:flex; flex-wrap:wrap; gap:4px; flex:1 1 100%; }
   .chip { border:1px solid var(--line); border-radius:999px; padding:1px 10px; font-size:12.5px; user-select:none; cursor:pointer; background:#fff; }
   .chip.on { color:#fff; border-color:transparent; }
@@ -51,8 +55,10 @@
   <h1>__TITLE__</h1>
   <label>Eje X <select id="xmode"></select></label>
   <label id="lblbase">Mapa <select id="base"><option value="osm">OpenStreetMap</option><option value="sat">Satélite (Esri)</option></select></label>
+  <label id="lblgps" style="display:none">GPS <select id="gps"></select></label>
   <label id="lblcolor">Color de la ruta <select id="color"></select></label>
   <label><input type="checkbox" id="fity" checked> Ajustar Y al tramo visible</label>
+  <button id="anim">▶ Animar recorrido</button>
   <button id="resetz">Restablecer zoom</button>
   <button id="allv">Todas</button>
   <span class="hint">Clic en el título de una gráfica para ampliarla (Esc para volver). Pasa el mouse por una gráfica o por el mapa para ver el mismo instante en todo.</span>
@@ -96,12 +102,72 @@ function stats(y, i0, i1) {
 }
 function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
 
+// ---------- animacion del recorrido (inicio a fin en ANIM_S segundos) ----------
+const ANIM_S = 8;
+let anim = null;
+function stopAnim() {
+  if (!anim) return;
+  cancelAnimationFrame(anim.raf); anim = null;
+  $('#anim').textContent = '▶ Animar recorrido';
+  if (mapDiv.data) Plotly.restyle(mapDiv, {lat: [[]], lon: [[]]}, [HL]);
+  updateRange();  // devuelve el resaltado del mapa a lo que marcan las graficas
+}
+function toggleAnim() {
+  if (anim) { stopAnim(); return; }
+  const idx = []; D.lat.forEach((v, i) => { if (v != null) idx.push(i); });
+  if (idx.length < 2) return;
+  // estela con cortes donde hay una pausa larga (no une vuelos distintos)
+  const t = D.x.fecha || D.x.transcurrido, lim = D.x.fecha ? GAP_S * 1000 : GAP_S;
+  const tl = [], tn = [], end = [];
+  idx.forEach((i, k) => {
+    if (k && t && t[i] - t[idx[k - 1]] > lim) { tl.push(null); tn.push(null); }
+    tl.push(D.lat[i]); tn.push(D.lon[i]); end.push(tl.length);
+  });
+  anim = {idx, tl, tn, end, t0: performance.now(), raf: 0};
+  $('#anim').textContent = '■ Detener animación';
+  const step = now => {
+    if (!anim) return;
+    const p = Math.min((now - anim.t0) / (ANIM_S * 1000), 1), k = Math.round(p * (idx.length - 1));
+    Plotly.restyle(mapDiv, {lat: [anim.tl.slice(0, anim.end[k])], lon: [anim.tn.slice(0, anim.end[k])]}, [HL]);
+    applyCursor(idx[k], null);
+    if (p >= 1) stopAnim(); else anim.raf = requestAnimationFrame(step);
+  };
+  anim.raf = requestAnimationFrame(step);
+}
+
+// ---------- GPS: Datos (todas las filas) / Dron (solo las filas con posicion del dron) ----------
+function setGps(name) {
+  stopAnim();
+  if (!D.full) D.full = {n: D.n, y: D.y, x: D.x, utc: D.utc};
+  const F = D.full, g = D.gps[name];
+  const keep = [];
+  if (name === 'dron') g.lat.forEach((v, i) => { if (v != null) keep.push(i); });
+  const pick = a => a && name === 'dron' ? keep.map(i => a[i]) : a;
+  D.n = name === 'dron' ? keep.length : F.n;
+  D.y = {}; Object.keys(F.y).forEach(k => D.y[k] = pick(F.y[k]));
+  D.x = {}; Object.keys(F.x).forEach(k => D.x[k] = k === 'indice' ? Array.from({length: D.n}, (_, i) => i + 1) : pick(F.x[k]));
+  D.utc = pick(F.utc);
+  D.gpsSource = name;
+  Object.assign(D, g);
+  if (name === 'dron') { D.lat = pick(g.lat); D.lon = pick(g.lon); }
+  S.range = null;
+  buildPlots(); updateRange(); buildMap();
+}
+
 // ---------- controls ----------
 function buildControls() {
   const xs = $('#xmode');
   D.xmodes.forEach(m => xs.add(new Option(XLABEL[m], m)));
   xs.onchange = () => { S.xmode = xs.value; S.range = null; buildPlots(); updateRange(); };
   if (!HAS_MAP) { $('#lblbase').style.display = 'none'; $('#lblcolor').style.display = 'none'; }
+  if (HAS_MAP && D.gps) {
+    const gs = $('#gps');
+    gs.add(new Option('Datos (receptor)', 'datos'));
+    gs.add(new Option('Dron', 'dron'));
+    gs.value = D.gpsSource;
+    $('#lblgps').style.display = '';
+    gs.onchange = () => setGps(gs.value);
+  }
   const cs = $('#color');
   cs.add(new Option('(un solo color)', ''));
   D.vars.forEach(v => cs.add(new Option(v, v)));
@@ -109,6 +175,8 @@ function buildControls() {
   cs.onchange = () => { S.color = cs.value; buildMap(); };
   $('#base').value = S.base;
   $('#base').onchange = () => { S.base = $('#base').value; Plotly.relayout(mapDiv, baseLayout()); };
+  if (!HAS_MAP) $('#anim').style.display = 'none';
+  $('#anim').onclick = toggleAnim;
   $('#resetz').onclick = () => { S.range = null; panels.forEach(p => Plotly.relayout(p.pg, {'xaxis.autorange': true, 'yaxis.autorange': true})); updateRange(); };
   $('#allv').onclick = () => { S.vars = D.vars.slice(); buildChips(); buildPlots(); updateRange(); };
   $('#fity').onchange = () => updateRange();
@@ -130,6 +198,31 @@ function buildChips() {
 }
 
 // ---------- plots ----------
+// Las graficas son solo puntos; una pausa mayor a GAP_S entre dos muestras se une con una linea discontinua.
+const GAP_S = 1200;
+function threadLine(x, y, isDate) {  // hilo fino entre muestras seguidas; se corta donde hay una pausa
+  const tx = [], ty = [];
+  const lim = isDate ? GAP_S * 1000 : GAP_S;
+  let a = -1;
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] == null || y[i] == null) continue;
+    if (a >= 0 && S.xmode !== 'indice' && x[i] - x[a] > lim) { tx.push(null); ty.push(null); }
+    tx.push(x[i]); ty.push(y[i]); a = i;
+  }
+  return {x: tx, y: ty};
+}
+function gapLine(x, y, isDate) {
+  const gx = [], gy = [];
+  if (S.xmode === 'indice') return {x: gx, y: gy};
+  const lim = isDate ? GAP_S * 1000 : GAP_S;
+  let a = -1;  // ultimo indice con dato
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] == null || y[i] == null) continue;
+    if (a >= 0 && x[i] - x[a] > lim) { gx.push(x[a], x[i], null); gy.push(y[a], y[i], null); }
+    a = i;
+  }
+  return {x: gx, y: gy};
+}
 function buildPlots() {
   const wrap = $('#plots');
   panels.forEach(p => Plotly.purge(p.plot));
@@ -152,14 +245,21 @@ function buildPlots() {
       xaxis: {type: isDate ? 'date' : 'linear', showspikes: true, spikemode: 'across', spikethickness: 1, spikecolor: '#666', spikedash: 'dot', gridcolor: '#e6e9ee', title: {text: XLABEL[S.xmode], font: {size: 11}}, exponentformat: 'none'},
       yaxis: {title: {text: v, font: {size: 13, color}, standoff: 6}, tickfont: {size: 11, color}, showline: true, linecolor: color, linewidth: 2, gridcolor: '#e6e9ee', zeroline: false}
     };
+    const gap = gapLine(x, D.y[v], isDate), thread = threadLine(x, D.y[v], isDate);
     Plotly.newPlot(plot, [{
-      type: 'scattergl', mode: 'lines+markers', x, y: D.y[v], connectgaps: false,
-      line: {color, width: 1.5}, marker: {size: 3, color}, name: v,
+      type: 'scattergl', mode: 'markers', x, y: D.y[v],
+      marker: {size: 4, color}, name: v,
       hovertemplate: '%{y}<extra>' + v + '</extra>'
+    }, {
+      type: 'scattergl', mode: 'lines', x: thread.x, y: thread.y, connectgaps: false, hoverinfo: 'skip',
+      line: {color, width: 0.8}, opacity: 0.55, name: v + ' (hilo)'
+    }, {
+      type: 'scattergl', mode: 'lines', x: gap.x, y: gap.y, connectgaps: false, hoverinfo: 'skip',
+      line: {color, width: 1.3, dash: 'dash'}, name: v + ' (pausa)'
     }], layout, {responsive: true, displaylogo: false, scrollZoom: true,
       toImageButtonOptions: {format: 'png', filename: D.title + '_' + v, scale: 2},
       modeBarButtonsToRemove: ['select2d', 'lasso2d']});
-    plot.on('plotly_hover', e => { const pt = e.points && e.points[0]; if (pt) setCursor(pt.pointNumber, plot); });
+    plot.on('plotly_hover', e => { const pt = e.points && e.points[0]; if (pt && pt.curveNumber === 0) setCursor(pt.pointNumber, plot); });
     plot.on('plotly_relayout', ed => {
       if (syncing) return;
       let r = null, auto = false;
