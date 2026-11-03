@@ -1,0 +1,5 @@
+# Los .bat necesitan CRLF en Windows y los .sh LF en Linux, sin importar cómo esté configurado git en cada equipo.
+*.bat text eol=crlf
+*.sh text eol=lf
+*.ico binary
+*.png binary

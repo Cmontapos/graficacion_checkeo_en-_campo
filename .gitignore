@@ -4,3 +4,4 @@ build/
 dist/
 *.csv
 MicroGas_receptor_*.html
+.~lock.*#

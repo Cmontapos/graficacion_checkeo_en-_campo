@@ -1,16 +1,53 @@
 # Graficación CSV de GasLab
 
-Primera versión local: una ventana sencilla para abrir CSV, seleccionar variables y verlas en un visor rápido (pyqtgraph) o en el navegador (Plotly), con la ruta GPS sobre un mapa. Compatible con los CSV de MicroGas Receptor, DJI y Simulado. No modifica el CSV original.
+Herramienta local para abrir CSV de mediciones, elegir variables y analizarlas con la ruta GPS. **GasLab 2.0** (`./iniciar.sh`) es una app en el navegador organizada en pasos: datos, límites, mapa de calor y terreno 3D. La **versión 1** (`.venv/bin/python graficar.py`) sigue disponible: una ventana para abrir el CSV y verlo en un visor rápido (pyqtgraph) o en el navegador (Plotly), con la ruta GPS sobre un mapa. Las dos son compatibles con los CSV de MicroGas Receptor, DJI, Simulado y Campbell (`Flight_Data`), y ninguna modifica el CSV original. También abren Excel (`.xlsx`/`.xlsm`): por defecto, la hoja `Datos` si existe (la que exporta GasLab, cuya fecha local se vuelve a pasar a UTC) o la hoja más grande. En la 2.0, si el libro tiene varias hojas con datos, aparece el selector **Hoja:** junto al nombre del archivo para abrir otra; cada hoja necesita su propia columna de tiempo. Los `.xls` antiguos hay que guardarlos antes como `.xlsx` o `.csv`.
 
-## Abrir
+## GasLab 2.0 (en desarrollo, rama `develop-2.0`)
+
+`./iniciar.sh` (o `.venv/bin/python gaslab_web.py`) abre la app en el navegador, servida desde `http://127.0.0.1` (solo esta máquina). **Abrir archivo…** (CSV o Excel) usa el administrador de archivos del equipo (también se puede arrastrar el archivo a la página). Después aparecen:
+
+- **Variables:** todas las columnas numéricas, con filtro. Por defecto se marcan **CO₂, SO₂ y H₂S** si el archivo los trae (se reconocen por nombre: `co2_ppm`, `CO2_Concentration_Avg`, `SO2 (ppm)`…; se ignoran columnas de temperatura, mV o RAW). Si falta alguno, se indica junto a la lista.
+- **Izquierda:** la ruta GPS sin fondo de mapa (misma escala en metros en ambos ejes, inicio y fin marcados) y debajo la **altura contra la hora**.
+- **Derecha:** una gráfica por variable contra la **hora del día** en la zona elegida.
+- **Zona horaria** (arriba a la derecha): `UTC` por defecto; acepta cualquier zona IANA (`America/Costa_Rica`, `Europe/Rome`…).
+
+**Todas** marca todas las variables. Las gráficas se mueven como en la versión anterior: **arrastrar desplaza** y **la rueda acerca o aleja**; el recuadro de zoom sigue disponible en la barra de cada gráfica. Mientras se mueve una, las demás la siguen en vivo; al soltar, el eje Y se ajusta al tramo visible. **Restablecer zoom** (o doble clic) vuelve a todo el archivo. El tramo visible se resalta en la ruta; al pasar el mouse se marca el mismo instante en todas las gráficas y en el mapa. Una pausa de más de 20 muestras (mínimo 10 s) corta la línea.
+
+**Rendimiento:** el navegador nunca recibe el CSV completo. `gaslab_web.py` manda a cada gráfica el mínimo y el máximo por columna de píxeles (así no se pierden picos) y, al hacer zoom, vuelve a pedir solo el tramo visible con más detalle; la tarjeta de cada gráfica indica cuántos puntos se muestran. La ruta se limita a 20.000 puntos. Plotly se sirve desde el paquete instalado, por lo que la app no necesita internet.
+
+**Plan de pasos (pestañas).** La 2.0 se organiza en pestañas que son los pasos de un análisis, en orden:
+1. **Datos** (lo descrito arriba): abrir el CSV, elegir variables y zona horaria, revisar la ruta, la altura y las variables contra la hora.
+2. **Límites (saturación):** filas `Dato: ____ | Máximo: ____ | Mínimo: ____`. Cada muestra por encima del máximo pasa a valer el máximo y cada una por debajo del mínimo pasa a valer el mínimo. Ninguna muestra se descarta.
+   - La selección de variables es la misma en todas las pestañas: hay una fila por cada variable marcada en el paso 1. **+ Agregar límite** marca otra variable, ✕ la desmarca y cambiar el Dato cambia cuál está marcada; todo se refleja al volver al paso 1. Los valores escritos se recuerdan por variable aunque se desmarque.
+   - Un campo vacío significa sin límite de ese lado. Se acepta coma decimal. Si el mínimo es mayor que el máximo, la fila se marca en rojo y no se aplica.
+   - Debajo hay una gráfica grande con los datos ya ajustados. Los botones de arriba eligen la variable, y los límites se ven como líneas punteadas. Bajo la gráfica se indica cuántas muestras quedaron en cada límite.
+   - **Comparar con original** muestra la curva sin ajustar en gris detrás de la ajustada. **Pantalla completa** amplía la gráfica; Esc sale.
+   - Los pasos siguientes usarán los valores ajustados (normalmente de una sola variable). En el servidor, `Dataset.values(nombre, límites)` devuelve la columna ya ajustada.
+
+3. **Mapa de calor:** se analiza **una sola señal** a la vez, elegida entre las variables seleccionadas, con los valores ya ajustados en Límites. Toda la configuración está arriba:
+   - **2D / 3D:** el selector cambia la vista sobre la imagen satelital de Esri. Solo el fondo necesita internet; sin conexión, la nube y las barras se ven igual sobre fondo oscuro.
+   - **Escala:** **Divisiones iniciales** y **% mínimo por división** tienen cada uno un botón ⓘ que abre una ventanita con su explicación. El rango del mínimo al máximo registrado se divide en N divisiones iniciales iguales. Cada división con menos del **% mínimo** de las muestras se une a su vecina con menos muestras, hasta que todas lleguen al mínimo. Así hay más divisiones (más colores) donde se concentran las muestras. La tabla muestra cada división con su rango, cantidad de muestras y %, y el recuadro superior muestra el rango completo de valores. El mapa lleva la misma leyenda.
+   - **2D, nube:** cada muestra se dibuja saturada en su posición y se difumina alrededor con un núcleo gaussiano, con una paleta intensa (azul → cian → verde → amarillo → naranja → rojo, colores puros). **Tamaño** va de 0,1 a 2 m (1 m por defecto) y **Opacidad** (95 % por defecto) controla cuánto deja ver el satélite. **Enfriamiento** (0 a 5, 1 por defecto, con su botón ⓘ) hace que cada muestra tenga su color medido en el centro y se vaya "enfriando" hacia los lados: su valor baja hacia el mínimo de la escala (azul) al alejarse del punto. Más alto = se enfría más cerca del centro; 0 = el mismo color hasta el borde. Con 1, a una distancia igual al Tamaño queda al 60 % de su valor sobre el mínimo. La nube se recalcula para la zona visible a la resolución de la pantalla cada vez que se mueve el mapa, así que se ve nítida con cualquier zoom. **Alcance** (1 a 4 veces el Tamaño, 2,5 por defecto, con ⓘ; entre paréntesis se ve en metros) es hasta dónde se pinta la nube de cada muestra; más allá no se pinta nada, para no inventar datos lejos de lo medido. Alargarlo estira el borde que se desvanece sin cambiar el centro ni el enfriamiento, que dependen del Tamaño. El máximo es 4 porque más lejos el promedio de valores deja de ser fiable. Donde se cruzan nubes, el color es el promedio ponderado de las muestras cercanas. Al pasar el mouse se ve el valor de la muestra.
+   - **3D, barras:** una barra por muestra, de altura proporcional al valor (**Altura máxima** para el valor más alto) y del color de su división. **Ancho** cambia el grosor. Clic derecho o Ctrl + arrastrar gira e inclina la vista.
+   - **Guardar:** **Imagen PNG** guarda lo que se ve, con la leyenda. **GeoTIFF + QGIS (.zip)** descarga una carpeta con `<archivo>_<señal>_nube.tif` (RGBA, igual a la app), `_valores.tif` (Float32 con la escala por divisiones y el mismo enfriamiento), `_puntos.geojson` y `<archivo>_<señal>.qgz`. Al abrir el `.qgz`, la nube aparece encendida sobre Esri satélite, y los valores y las muestras quedan como capas apagadas. El GeoTIFF cubre toda la ruta con un máximo de 2500 píxeles de lado, así que en rutas largas su píxel puede ser mayor que la nube (por ejemplo, 1,1 m en un vuelo de 3 km); el nombre de la capa indica el tamaño del píxel. Se genera en `mapa_calor.py` (`adaptive_classes`, `cloud`, `export_cloud`).
+
+4. **Terreno 3D:** relieve real con la imagen satelital encima. Cada muestra se dibuja como un punto (un cubo pequeño) flotando a la **altura que midió el GPS**, con el color de su concentración. Usa la misma señal, escala y colores del paso 3, y la misma tabla y leyenda. No exagera el relieve: todo va a escala real. Clic derecho o Ctrl + arrastrar gira e inclina la vista, y al pasar el mouse por un punto se ven su valor, la altura medida, la del terreno y la altura sobre el terreno.
+   - **Relieve:** AWS Terrain Tiles (gratis, sin cuenta, unos 30 m de detalle), en el zoom 13 porque algunas teselas del 14 vienen vacías, por ejemplo sobre el cráter de Vulcano. Necesita internet la primera vez que se abre una zona; las teselas se guardan en `~/.cache/gaslab_tiles/terrarium`. `terreno.py` calcula la altura del terreno bajo cada muestra con la misma fuente que dibuja el mapa.
+   - **Altura de la muestra:** la columna de altura del archivo (`altitud_m`…), tomada como altura sobre el nivel del mar. Las muestras que quedan bajo el relieve se dibujan sobre el suelo, y un aviso indica cuántas son y cuánto quedaban por debajo. En `Flight_Data` son 271, hasta 4,6 m, junto a la costa: está dentro de la precisión del GPS y del relieve.
+
+La librería de mapas (MapLibre GL 4.7.1) está guardada en `web/vendor/`, así que la app no la descarga de internet.
+
+Pruebas: `.venv/bin/python -m unittest test_gaslab_web.py`. La versión 1 (ventana Tkinter, visor Qt, CLI y mapas de calor) sigue disponible con `.venv/bin/python graficar.py` y se describe a continuación.
+
+## Abrir la versión 1
 
 Desde esta carpeta:
 
 ```bash
-./iniciar.sh
+.venv/bin/python graficar.py
 ```
 
-O ejecuta `.venv/bin/python graficar.py`. Pulsa **Abrir CSV**, selecciona una o varias variables (o **Seleccionar todas las variables**), ajusta la columna de tiempo si hace falta y abre el **Visor rápido (ventana)**, la **Vista interactiva (navegador)** o el **Mapa GPS…**. El eje X (fecha local, tiempo transcurrido o número de muestra) se cambia dentro de cada visor.
+(`./iniciar.sh` y `make run` abren ahora la 2.0.) Pulsa **Abrir CSV**, selecciona una o varias variables (o **Seleccionar todas las variables**), ajusta la columna de tiempo si hace falta y abre el **Visor rápido (ventana)**, la **Vista interactiva (navegador)** o el **Mapa GPS…**. El eje X (fecha local, tiempo transcurrido o número de muestra) se cambia dentro de cada visor.
 
 Zona predeterminada: `UTC`. Puedes cambiarla a otra zona IANA (por ejemplo `America/Costa_Rica`). Fechas ISO 8601 con zona respetan esa zona; fechas sin zona se interpretan como UTC. Para fechas numéricas, se detecta Unix s/ms/us/ns por magnitud; selecciona la unidad explícita si es necesario. Las filas pueden venir en cualquier orden siempre que el CSV tenga encabezado: al cargar se ordenan cronológicamente (en memoria) por la columna de tiempo elegida; las filas sin fecha válida quedan al final. Si la columna de tiempo no se puede leer, se conserva el orden del archivo. Se recomienda fecha ISO completa, no una columna que contenga solamente la hora.
 
@@ -91,8 +128,11 @@ Python 3.10 o posterior con Tkinter. En Ubuntu, si falta Tkinter, instala el paq
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-./iniciar.sh
+./iniciar.sh                    # GasLab 2.0 en el navegador
+.venv/bin/python graficar.py    # versión 1 (ventana Tkinter)
 ```
+
+La 2.0 no necesita dependencias adicionales: Plotly se sirve desde el paquete instalado y MapLibre viene en `web/vendor/`.
 
 El entorno preparado en esta máquina reutiliza pandas y PyQt5 ya instalados mediante `--system-site-packages`; las dependencias adicionales están dentro de `.venv`.
 
@@ -101,7 +141,8 @@ El entorno preparado en esta máquina reutiliza pandas y PyQt5 ya instalados med
 Las pruebas usan datos **sintéticos** definidos en `test_graficar.py` (GPS, un hueco y un cambio de día en Costa Rica); no son una medición real. Las imágenes y el mapa de `ejemplos/` son de una versión anterior.
 
 ```bash
-.venv/bin/python -m unittest -v test_graficar.py
+.venv/bin/python -m unittest -v test_graficar.py      # versión 1 y mapa_calor.py
+.venv/bin/python -m unittest -v test_gaslab_web.py    # GasLab 2.0 (teselas de relieve simuladas, sin internet)
 ```
 
 Referencias de los fondos: [Folium: capas de mapas](https://python-visualization.github.io/folium/v0.19.3/user_guide/raster_layers/tiles.html) y [Esri: atribución de mapas base](https://support.esri.com/en-us/knowledge-base/what-is-the-correct-way-to-cite-an-arcgis-online-basema-000012040).
@@ -117,7 +158,9 @@ Conserva un CSV original sin modificar y guarda los resultados aparte. El progra
 
 ## Guía de mantenimiento y diagnóstico
 
-El mapa de calor georreferenciado (rejilla, desfase, GeoTIFF, GeoJSON y proyecto QGIS) está en `mapa_calor.py`. `graficar.py` separa carga (`load_csv`), fechas (`parse_time`/`time_axis`), segmentos GPS (`gps_segments`), mapa (`make_map`), vista web (`make_viewer`), ventana de selección (`gui`) y CLI (`main`); el visor rápido está en `visor_qt.py`. Al cambiar fechas o columnas ejecuta `test_graficar.py` y comprueba un CSV de cada app. Los datos de prueba son sintéticos y no validan GPS real.
+**GasLab 2.0:** `gaslab_web.py` es el servidor local y la API (`Dataset` carga el CSV con `load_csv`/`parse_time` de `graficar.py`, reduce cada serie a mín/máx por píxel, aplica los límites y prepara el mapa de calor y el terreno). La página está en `web/` (`index.html`, `app.css`, `app.js`; cada paso tiene su `enter…()` en `app.js`). `terreno.py` lee la altura del relieve (AWS Terrain Tiles). La escala adaptativa, la nube y la exportación GeoTIFF/QGIS están en `mapa_calor.py`. Al cambiarlos ejecuta `test_gaslab_web.py`; el `CHANGELOG.md` explica cada paso y sus detalles delicados.
+
+**Versión 1:** el mapa de calor georreferenciado (rejilla, desfase, GeoTIFF, GeoJSON y proyecto QGIS) está en `mapa_calor.py`. `graficar.py` separa carga (`load_csv`), fechas (`parse_time`/`time_axis`), segmentos GPS (`gps_segments`), mapa (`make_map`), vista web (`make_viewer`), ventana de selección (`gui`) y CLI (`main`); el visor rápido está en `visor_qt.py`. Al cambiar fechas o columnas ejecuta `test_graficar.py` y comprueba un CSV de cada app. Los datos de prueba son sintéticos y no validan GPS real.
 
 | Problema | Comprobación |
 |---|---|
@@ -127,16 +170,32 @@ El mapa de calor georreferenciado (rejilla, desfase, GeoTIFF, GeoJSON y proyecto
 | Mapa sin fondo | Internet y servicios del navegador; el HTML necesita recursos externos |
 | CSV no carga | Encabezado, separador y que no se haya convertido al guardarlo en una hoja de cálculo |
 | No guarda resultados | Carpeta de destino existente y con permisos; la CLI no crea carpetas de salida |
+| 2.0: no abre el navegador | `./iniciar.sh` muestra en la terminal la dirección `http://127.0.0.1:…`; ábrela a mano |
+| `GasLab.exe` no abre ventana | Si no aparece en 2 minutos se cierra solo. Prueba `iniciar.bat` desde el código: la consola muestra la dirección y los errores |
+| 2.0: mapa de calor o terreno sin satélite o sin relieve | Internet (Esri y AWS Terrain Tiles); sin conexión, la nube y las barras se ven sobre fondo oscuro, y el relieve solo aparece en zonas ya guardadas en `~/.cache/gaslab_tiles/terrarium` |
 
 Las dependencias se instalan desde cero con los pasos anteriores; no copies `.venv` a otra máquina. Para reproducir una entrega registra también las versiones instaladas con `.venv/bin/python -m pip freeze`.
 
 
 Marcadores del mapa: inicio 🏠 y fin ✈️ (cámbialos en `START_ICON` y `END_ICON` de `graficar.py`). En los cuadros de datos la altura se muestra como **Altitud**, después de latitud y longitud.
 
+### Tabletas
+
+En una tableta con Windows funciona igual (en Windows en ARM hace falta Windows 11; en "modo S" no se pueden abrir programas fuera de la Store). Con el dedo:
+- **Gráficas:** un dedo desplaza y **pellizcar con dos dedos** acerca o aleja, como la rueda del mouse (las demás gráficas siguen igual). Tocar la línea muestra el valor; un doble toque devuelve la vista completa.
+- **Mapa de calor y terreno 3D:** mover, pellizcar y girar o inclinar con dos dedos. **Tocar una muestra** muestra su valor, igual que al pasar el mouse.
+- Arrastrar archivos a la página no funciona con el dedo: usa **Abrir archivo…**.
+
 ## Ejecutable de Windows
 
-En Windows con Python 3.10+: doble clic a `build_windows.bat` (o `pyinstaller --noconfirm GasLab.spec` tras instalar `requirements-build.txt`). El resultado queda en `dist\GasLab\`; esa carpeta completa se puede copiar a otro equipo y ejecutar `GasLab.exe`. En GitHub, el workflow *Build Windows* (pestaña Actions → Run workflow, o al subir una etiqueta `v*`) lo compila y lo publica como artefacto `GasLab-windows`. El visor rápido se abre relanzando el mismo ejecutable con `--visor-qt`.
+`GasLab.exe` es **GasLab 2.0** como app de escritorio: no muestra consola, abre su propia ventana (Edge o Chrome en modo app, sin pestañas ni barra de direcciones; Edge viene con Windows 10 y 11) y se cierra sola unos segundos después de cerrar esa ventana. Si no encuentra Edge ni Chrome, abre una pestaña del navegador predeterminado. La versión 1 ya no va en el ejecutable; sigue disponible desde el código (`graficar.py`).
+
+En Windows con Python 3.10+: doble clic a `build_windows.bat` (o `pyinstaller --noconfirm GasLab.spec` tras instalar `requirements-build.txt`). El resultado queda en `dist\GasLab\`; esa carpeta completa se puede copiar a otro equipo y ejecutar `GasLab.exe` (conviene crear un acceso directo en el escritorio). En GitHub, el workflow *Build Windows* (pestaña Actions → Run workflow, o al subir una etiqueta `v*`) lo compila y lo publica como artefacto `GasLab-windows`.
+
+Desde el código, en Windows: `iniciar.bat` (doble clic) abre la 2.0 en su ventana con el `.venv` del proyecto. `--ventana` hace lo mismo en cualquier sistema: `.venv/bin/python gaslab_web.py --ventana`.
+
+Si el `.exe` dice *Failed to load Python DLL ... `_internal\python3XX.dll`* o `dist\GasLab\_internal` sale casi vacío: compila con Python de [python.org](https://www.python.org/downloads/), **no el de Microsoft Store** (PyInstaller no puede copiar su DLL), revisa que el antivirus no haya borrado archivos de `dist\` y copia siempre la carpeta `dist\GasLab\` completa. `build_windows.bat` detecta el Python de Store y un `.venv` inválido (lo rehace), y avisa si falta el DLL al terminar.
 
 ## Makefile
 
-`make help` lista los objetivos: `make setup` (crea `.venv`), `make run`, `make test`, `make build` (genera `dist/GasLab/`) y `make clean`. En Windows hace falta GNU make (`choco install make` o `winget install ezwinports.make`); `build_windows.bat` sigue funcionando sin make.
+`make help` lista los objetivos: `make setup` (crea `.venv`), `make run` (abre GasLab 2.0 en el navegador), `make test` (corre `test_graficar.py` y `test_gaslab_web.py`), `make build` (genera `dist/GasLab/` con la 2.0; `GasLab.exe` en Windows) y `make clean`. En Windows hace falta GNU make (`choco install make` o `winget install ezwinports.make`); `build_windows.bat` sigue funcionando sin make.

@@ -5,4 +5,5 @@ if [[ ! -x .venv/bin/python ]]; then
     echo 'Prepara el entorno siguiendo README.md: python3 -m venv .venv'
     exit 1
 fi
-exec .venv/bin/python graficar.py "$@"
+# GasLab 2.0 en el navegador; la versión anterior (ventana Tkinter + visor Qt) sigue en graficar.py.
+exec .venv/bin/python gaslab_web.py "$@"

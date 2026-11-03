@@ -15,9 +15,9 @@ STAMP := .venv/.instalado
 
 help:
 	@echo make setup  - crea .venv e instala dependencias de build
-	@echo make run    - abre la app desde el codigo fuente
+	@echo make run    - abre GasLab 2.0 en el navegador
 	@echo make test   - ejecuta los tests
-	@echo make build  - genera dist/GasLab/, GasLab.exe en Windows
+	@echo make build  - genera dist/GasLab/ con GasLab 2.0, GasLab.exe en Windows
 	@echo make clean  - borra build/ y dist/
 
 setup: $(STAMP)
@@ -28,10 +28,10 @@ $(STAMP): requirements.txt requirements-build.txt
 	$(VPY) -c "open('$(STAMP)','w').close()"
 
 run: $(STAMP)
-	$(VPY) graficar.py
+	$(VPY) gaslab_web.py
 
 test: $(STAMP)
-	$(VPY) -m pytest -q test_graficar.py
+	$(VPY) -m pytest -q test_graficar.py test_gaslab_web.py
 
 build: $(STAMP)
 	$(VPY) -m PyInstaller --noconfirm --clean GasLab.spec

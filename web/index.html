@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GasLab 2.0</title>
+<link rel="icon" type="image/png" href="icono.png">
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<link rel="stylesheet" href="app.css">
+<script src="plotly.min.js"></script>
+<script src="vendor/maplibre-gl.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">GasLab <span>2.0</span></div>
+  <nav class="tabs" id="tabs">
+    <button class="tab on" data-step="1">1 · Datos</button>
+    <button class="tab" data-step="2" disabled title="Abre un archivo primero">2 · Límites</button>
+    <button class="tab" data-step="3" disabled title="Abre un archivo primero">3 · Mapa de calor</button>
+    <button class="tab" data-step="4" disabled title="Abre un archivo primero">4 · Terreno 3D</button>
+  </nav>
+  <label class="button primary">Abrir archivo…<input id="file" type="file" accept=".csv,.txt,text/csv,.xlsx,.xlsm" hidden></label>
+  <div id="fileinfo" class="fileinfo">Ningún archivo abierto</div>
+  <label class="zone" id="sheetbox" hidden title="Este Excel tiene varias hojas con datos"><select id="sheet"></select></label>
+  <label class="zone">Zona horaria
+    <input id="zone" list="zones" value="UTC" spellcheck="false" autocomplete="off">
+    <datalist id="zones"></datalist>
+  </label>
+</header>
+
+<section id="empty" class="empty">
+  <div class="drop">
+    <p class="big">Abre un CSV o un Excel (.xlsx) para empezar</p>
+    <p>Pulsa <b>Abrir archivo…</b> o arrastra el archivo aquí. Funciona con CSV de MicroGas Receptor, DJI, Simulado y Campbell (Flight_Data).</p>
+  </div>
+</section>
+
+<section id="workspace" hidden>
+ <div id="step1" class="step">
+  <div class="card vars">
+    <div class="vars-head">
+      <h2>Variables</h2>
+      <input id="filter" type="search" placeholder="Filtrar…" spellcheck="false">
+      <button id="all" class="button">Todas</button>
+      <button id="gases" class="button">CO₂ · SO₂ · H₂S</button>
+      <button id="none" class="button">Ninguna</button>
+      <span id="note" class="note"></span>
+    </div>
+    <div id="varlist" class="varlist"></div>
+  </div>
+
+  <div class="grid">
+    <div class="left">
+      <div class="card">
+        <div class="card-head"><h3>Ruta GPS</h3><span id="routeinfo" class="muted"></span></div>
+        <div id="map" class="plot map"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3 id="alttitle">Altura</h3><span id="altinfo" class="muted"></span></div>
+        <div id="alt" class="plot chart"></div>
+      </div>
+    </div>
+    <div class="right">
+      <div class="right-head"><h2>Variables contra hora del día <span id="zonelabel" class="muted"></span></h2>
+        <button id="reset" class="button">Restablecer zoom</button></div>
+      <div id="charts" class="charts"></div>
+    </div>
+  </div>
+ </div>
+
+ <div id="step2" class="step" hidden>
+  <div class="card limits">
+    <div class="card-head"><h2>Límites (saturación)</h2>
+      <span class="muted">Cada muestra por encima del máximo queda en el máximo y cada una por debajo del mínimo queda en el mínimo. Campo vacío = sin límite.</span></div>
+    <div id="limitrows" class="limitrows"></div>
+    <button id="addlimit" class="button">+ Agregar límite</button>
+  </div>
+  <div id="bigcard" class="card bigcard">
+    <div class="card-head"><div id="pick" class="pick"></div><span id="biginfo" class="muted"></span></div>
+    <div id="big" class="plot bigplot"></div>
+    <div class="bigfoot">
+      <label class="check"><input type="checkbox" id="compare"> Comparar con original</label>
+      <span id="bigstats" class="muted"></span>
+      <button id="full" class="button">Pantalla completa</button>
+    </div>
+  </div>
+ </div>
+
+ <div id="step3" class="step" hidden>
+  <div class="card heatcfg">
+    <div class="cfg-row">
+      <label class="field strong">Señal <select id="hvar"></select></label>
+      <div class="seg" id="hview" role="group" aria-label="Vista">
+        <button data-view="2d" class="on">2D</button><button data-view="3d">3D</button>
+      </div>
+      <span id="hnote" class="muted"></span>
+    </div>
+    <div class="cfg-row">
+      <span class="cfg-title">Escala</span>
+      <span class="group"><label class="field">Divisiones iniciales <input id="hbins" type="number" min="2" max="100" step="1" value="20"></label><button class="info" data-info="bins" aria-label="Qué son las divisiones iniciales">i</button></span>
+      <span class="group"><label class="field">% mínimo por división <input id="hmin" type="number" min="0" max="50" step="0.5" value="5"></label><button class="info" data-info="minpct" aria-label="Qué es el % mínimo por división">i</button></span>
+    </div>
+    <div class="cfg-row" data-view="2d">
+      <span class="cfg-title">Nube</span>
+      <label class="field">Tamaño <input id="hsize" type="range" min="0.1" max="2" step="0.1" value="1"><output for="hsize"></output></label>
+      <label class="field">Opacidad <input id="hop" type="range" min="10" max="100" step="5" value="95"><output for="hop"></output></label>
+      <span class="group"><label class="field">Enfriamiento <input id="hcool" type="range" min="0" max="5" step="0.1" value="1"><output for="hcool"></output></label><button class="info" data-info="cool" aria-label="Qué es el enfriamiento">i</button></span>
+      <span class="group"><label class="field">Alcance <input id="hreach" type="range" min="1" max="4" step="0.1" value="2.5"><output for="hreach"></output></label><button class="info" data-info="reach" aria-label="Qué es el alcance">i</button></span>
+    </div>
+    <div class="cfg-row" data-view="3d" hidden>
+      <span class="cfg-title">Barras</span>
+      <label class="field">Altura máxima <input id="hheight" type="range" min="5" max="500" step="5" value="100"><output for="hheight"></output></label>
+      <label class="field">Ancho <input id="hwidth" type="range" min="0.5" max="20" step="0.5" value="2"><output for="hwidth"></output></label>
+    </div>
+    <div class="cfg-row">
+      <span class="cfg-title">Guardar</span>
+      <button id="hpng" class="button">Imagen PNG</button>
+      <button id="hzip" class="button">GeoTIFF + QGIS (.zip)</button>
+    </div>
+  </div>
+  <div class="heatgrid">
+    <div class="card heatmapcard">
+      <div id="hmap" class="hmap"></div>
+      <div id="hlegend" class="hlegend"></div>
+    </div>
+    <div class="card heattable">
+      <h3>Escala de colores</h3>
+      <div id="hrange" class="hrange"></div>
+      <table><thead><tr><th></th><th>Rango</th><th>Muestras</th><th>%</th></tr></thead><tbody id="htable"></tbody></table>
+    </div>
+  </div>
+ </div>
+
+ <div id="step4" class="step" hidden>
+  <div class="card heatcfg">
+    <div class="cfg-row">
+      <label class="field strong">Señal <select id="tvar"></select></label>
+      <span class="muted">Escala y colores del paso 3. Cada muestra flota a la altura que midió, sobre el relieve real. Clic derecho o Ctrl + arrastrar gira e inclina la vista.</span>
+    </div>
+    <div id="tnote" class="tnote" hidden></div>
+  </div>
+  <div class="heatgrid">
+    <div class="card heatmapcard">
+      <div id="tmap" class="hmap"></div>
+      <div id="tlegend" class="hlegend"></div>
+    </div>
+    <div class="card heattable">
+      <h3>Escala de colores</h3>
+      <div id="trange" class="hrange"></div>
+      <table><thead><tr><th></th><th>Rango</th><th>Muestras</th><th>%</th></tr></thead><tbody id="ttable"></tbody></table>
+    </div>
+  </div>
+ </div>
+</section>
+
+<div id="infopop" class="infopop" role="dialog" hidden><button class="close" aria-label="Cerrar">✕</button><b></b><p></p></div>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

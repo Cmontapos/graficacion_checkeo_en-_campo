@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+EXCEL_SUFFIXES = ('.xlsx', '.xlsm', '.xls')
 TIME_COLUMNS = ('fecha_hora_utc', 'sen66_muestra_utc', 'received_at_ms', 'timestamp', 'time', 'datetime')
 LAT_COLUMNS = ('latitud', 'latitude', 'lat')
 LON_COLUMNS = ('longitud', 'longitude', 'lon', 'lng')
@@ -84,9 +85,51 @@ def gps_valid(lat, lon):
     return lat.between(-90, 90) & lon.between(-180, 180) & ~((lat == 0) & (lon == 0))
 
 
-def load_csv(path, only_new=False, time_column=None, unit='auto'):
+def read_excel(path, sheet=None):
+    """Hoja `sheet` de un libro Excel; por defecto 'Datos' (la que exporta GasLab) o la más grande.
+    Devuelve (tabla, hoja usada, hojas con datos)."""
+    name = Path(path).name
+    if Path(path).suffix.lower() == '.xls':
+        raise ValueError(f'{name} es un Excel antiguo (.xls): ábrelo en Excel y guárdalo como .xlsx o .csv.')
+    try:
+        sheets = pd.read_excel(path, sheet_name=None)
+    except ImportError as exc:
+        raise ValueError('Para abrir Excel instala las dependencias: pip install -r requirements.txt') from exc
+    except Exception as exc:  # zip dañado, libro protegido con contraseña...
+        raise ValueError(f'No se pudo leer {name} como Excel: {exc}') from exc
+    sheets = {title: table.dropna(how='all').dropna(axis=1, how='all') for title, table in sheets.items()}
+    sheets = {title: table for title, table in sheets.items() if not table.empty}
+    if not sheets:
+        raise ValueError(f'{name} no tiene datos en ninguna hoja.')
+    if sheet is None:
+        sheet = 'Datos' if 'Datos' in sheets else max(sheets, key=lambda title: sheets[title].size)
+    elif sheet not in sheets:
+        raise ValueError(f'{name} no tiene datos en la hoja «{sheet}».')
+    frame = sheets[sheet]
+    frame.columns = [str(c) for c in frame.columns]
+    # Libro exportado por GasLab (make_excel): la fecha está en hora local de la zona del encabezado; se pasa a UTC.
+    local = next((c for c in frame if re.fullmatch(r'Fecha y hora \(.+\)', c)), None)
+    if local and 'fecha_hora_utc' not in frame:
+        zone = local[len('Fecha y hora ('):-1]
+        try:
+            dates = pd.to_datetime(frame[local], errors='coerce').dt.tz_localize(ZoneInfo(zone), ambiguous='NaT', nonexistent='NaT')
+        except (KeyError, ValueError, TypeError):
+            return frame, sheet, list(sheets)
+        frame = frame.drop(columns=[local, 'Transcurrido (s)'], errors='ignore')
+        frame.insert(0, 'fecha_hora_utc', dates.dt.tz_convert('UTC'))
+    return frame, sheet, list(sheets)
+
+
+def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
+    """CSV (o Excel .xlsx/.xlsm) con columnas normalizadas y filas en orden cronológico. En un Excel,
+    frame.attrs dice la hoja usada ('sheet') y las que tienen datos ('sheets')."""
     if Path(path).stat().st_size == 0:
         raise ValueError(f'El archivo {Path(path).name} está vacío (0 bytes): no tiene encabezado ni datos.')
+    if Path(path).suffix.lower() in EXCEL_SUFFIXES:
+        table, used, names = read_excel(path, sheet)
+        frame = _prepare(table, only_new, time_column, unit)
+        frame.attrs.update(sheet=used, sheets=names)
+        return frame
     source = path
     raw = Path(path).read_bytes()
     if b'\x00' in raw:
@@ -104,6 +147,10 @@ def load_csv(path, only_new=False, time_column=None, unit='auto'):
         frame = pd.read_csv(source, sep=None, engine='python', encoding='utf-8-sig')
     except (pd.errors.EmptyDataError, pd.errors.ParserError, csv.Error) as exc:
         raise ValueError(f'No se pudo leer {Path(path).name} como CSV: {exc}') from exc
+    return _prepare(frame, only_new, time_column, unit)
+
+
+def _prepare(frame, only_new, time_column, unit):
     frame.columns = frame.columns.str.strip()
     if frame.columns.duplicated().any():
         raise ValueError('El CSV tiene nombres de columnas repetidos.')
@@ -512,7 +559,7 @@ def gui():
     time_box = None
 
     def open_csv():
-        path = filedialog.askopenfilename(initialdir=documents_dir(), filetypes=[('CSV', '*.csv')])
+        path = filedialog.askopenfilename(initialdir=documents_dir(), filetypes=[('CSV o Excel', '*.csv *.xlsx *.xlsm'), ('CSV', '*.csv'), ('Excel', '*.xlsx *.xlsm')])
         if not path:
             return
         try:
