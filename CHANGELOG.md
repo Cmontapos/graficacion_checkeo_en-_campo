@@ -1,5 +1,10 @@
 # Cambios
 
+## 2026-11-06 · Límites opcionales en el Excel
+- **Qué:** el paso 5 tiene la casilla **Aplicar los límites del paso 2**, apagada por defecto. Apagada, el Excel y su vista previa llevan los valores sin ajustar, como en el archivo original; marcada, se comportan como desde el 2026-11-05 (valores ajustados y límites en el título del Resumen). Junto a la casilla se indica qué variables se ajustan o que no hay límites escritos. Los límites siguen aplicándose siempre en las gráficas, el mapa de calor, el terreno, QGIS y Google Earth.
+- **Dónde:** `web/index.html` → fila **Límites** del paso 5 (`#xlimits`, `#xlimnote`); `web/app.js` → `state.excel.limits`, y `excelQuery()` solo manda `limits` si está marcada. El servidor no cambia: sin `limits`, `excel_parts()` usa los valores originales.
+- **Ojo:** volver a abrir en la app el Excel exportado ya funcionaba (hoja `Datos`, hora local → UTC). Se comprobó con `mediciones_16sep_gps_dron.csv` (GPS Ambos) y `Flight_Data_6_...`: mismas filas, horas y valores, y el selector del dron vuelve a aparecer. La casilla no se recuerda al recargar la página.
+
 ## 2026-11-05 · App de Android (APK)
 - **Qué:** GasLab 2.0 como app de Android (`dist/GasLab.apk`, ~45 MB, Android 11+ ARM64). Es la misma interfaz y el mismo servidor de la PC: Python con Chaquopy y la página en un WebView. Abrir archivo usa el selector de Android, Guardar deja los archivos en Descargas, funciona la pantalla completa de las gráficas y Atrás deja la app en segundo plano sin perder el archivo.
 - **Dónde:** `android/` (proyecto Gradle: `app/build.gradle`, `MainActivity.java`, `gaslab_android.py`), `make android`. En `web/app.js`, `saveFrom()` y el PNG del mapa usan `window.GasLabAndroid` cuando existe (en un WebView no hay descargas de `blob:`); en la PC no cambia nada. `gaslab_web.py` sirve `web/vendor/plotly.min.js` si está (la APK lo trae ahí y no necesita el paquete plotly).

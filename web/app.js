@@ -530,13 +530,14 @@ function pinchZoom(div, axes) {
 // ---------- paso 5: Excel (como la versión 1) ----------
 // Variables marcadas, versión en uso (original o calibrada), GPS elegido y todo el archivo o el tramo visible del paso 1.
 // La vista previa muestra las mismas hojas que tendrá el libro: Resumen, Datos, Gráficas y Ruta.
-state.excel = { range: null, sheet: 'Resumen', data: null };
+// Los límites del paso 2 solo entran al Excel si se marca «Aplicar los límites del paso 2» (apagada por defecto).
+state.excel = { range: null, sheet: 'Resumen', data: null, limits: false };
 const SHEETS = ['Resumen', 'Datos', 'Gráficas', 'Ruta'];
 const excelRange = () => (state.excel.range === 'visible' && state.range ? state.range : state.excel.range !== 'all' && state.tramo ? state.tramo.w : null);
 
 function excelQuery() {
-  const query = new URLSearchParams({ id: state.id, zone: state.zone, vars: state.selected.join(','), gps: bothGps() ? 'ambos' : mapGps(),
-    limits: JSON.stringify(limitsMap()) });
+  const query = new URLSearchParams({ id: state.id, zone: state.zone, vars: state.selected.join(','), gps: bothGps() ? 'ambos' : mapGps() });
+  if (state.excel.limits) query.set('limits', JSON.stringify(limitsMap()));
   const range = excelRange();
   if (range) { query.set('start', range[0]); query.set('end', range[1]); }
   if (state.excel.range !== 'all' && state.tramo) query.set('tag', state.tramo.tag);
@@ -558,10 +559,18 @@ function enterExcel() {
   $('xwhat').innerHTML = '<b></b> <span class="muted"></span>';
   $('xwhat').querySelector('b').textContent = state.selected.length ? `${state.selected.length} variable${state.selected.length > 1 ? 's' : ''}: ${state.selected.join(', ')}` : 'Ninguna variable marcada';
   const limited = Object.keys(limitsMap());
-  const bounds = limited.length ? ` · con los límites del paso 2 en ${limited.join(', ')}` : '';
+  const bounds = limited.length && state.excel.limits ? ` · con los límites del paso 2 en ${limited.join(', ')}` : '';
+  $('xlimits').checked = state.excel.limits;
+  $('xlimnote').textContent = !limited.length ? 'No hay límites escritos en el paso 2.'
+    : state.excel.limits ? `Se ajustan ${limited.join(', ')}.` : 'Los valores van sin ajustar, como en el archivo original.';
   $('xwhat').querySelector('span').textContent = ` · GPS ${gps}${version}${bounds} · hora de ${state.zone}. Se cambian en los pasos 1 y 2 y en la barra de arriba.`;
   refreshExcel();
 }
+
+$('xlimits').addEventListener('change', () => {
+  state.excel.limits = $('xlimits').checked;
+  enterExcel();
+});
 
 $('xrange').addEventListener('click', (event) => {
   const b = event.target.closest('button');

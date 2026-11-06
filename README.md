@@ -37,7 +37,7 @@ Herramienta local para abrir CSV de mediciones, elegir variables y analizarlas c
    - Un campo vacío significa sin límite de ese lado. Se acepta coma decimal. Si el mínimo es mayor que el máximo, la fila se marca en rojo y no se aplica.
    - Debajo hay una gráfica grande con los datos ya ajustados. Los botones de arriba eligen la variable, y los límites se ven como líneas punteadas. Bajo la gráfica se indica cuántas muestras quedaron en cada límite.
    - **Comparar con original** muestra la curva sin ajustar en gris detrás de la ajustada. **Pantalla completa** amplía la gráfica; Esc sale.
-   - Los pasos siguientes usan los valores ajustados: mapa de calor, terreno 3D, QGIS, Google Earth y Excel. En el servidor, `Dataset.values(nombre, límites)` devuelve la columna ya ajustada.
+   - Los pasos siguientes usan los valores ajustados: mapa de calor, terreno 3D, QGIS y Google Earth; el Excel solo si se marca la casilla del paso 5. En el servidor, `Dataset.values(nombre, límites)` devuelve la columna ya ajustada.
 
 3. **Mapa de calor:** se analiza **una sola señal** a la vez, elegida entre las variables seleccionadas, con los valores ya ajustados en Límites. Toda la configuración está arriba:
    - **2D / 3D:** el selector cambia la vista sobre la imagen satelital de Esri. Solo el fondo necesita internet; sin conexión, la nube y las barras se ven igual sobre fondo oscuro.
@@ -56,7 +56,7 @@ Herramienta local para abrir CSV de mediciones, elegir variables y analizarlas c
    - **Datos:** fecha y hora en la zona elegida, segundos transcurridos, las variables marcadas y la posición (latitud, longitud y altura). La vista previa muestra las primeras 30 filas y las últimas 3.
    - **Gráficas:** un gráfico nativo de Excel por variable. **Ruta:** longitud contra latitud, sin fondo de mapa.
    - **Tramo:** **Todo el archivo**, **Tramo elegido** (el de la fila Tramo del paso 1) o **Parte visible (paso 1)**. Por defecto se exporta la parte acercada si la hay, si no el tramo elegido, como en la versión 1. El nombre del archivo lleva el tramo (`_tramo2`, `_1609_12-13h`) y la fecha y hora de inicio.
-   - El libro usa las variables marcadas, **con los límites del paso 2 aplicados** (el título del Resumen dice cuáles; la posición GPS va sin tocar), la versión en uso (original o calibrada; en Comparación, la calibrada), el GPS elegido y la zona horaria. **Descargar Excel** lo guarda en Descargas. Se arma con `graficar.make_excel()`, el mismo código de la versión 1.
+   - El libro usa las variables marcadas con sus valores originales; con la casilla **Aplicar los límites del paso 2** van ajustadas (el título del Resumen dice cuáles; la posición GPS va sin tocar). También usa la versión en uso (original o calibrada; en Comparación, la calibrada), el GPS elegido y la zona horaria. **Descargar Excel** lo guarda en Descargas. Se arma con `graficar.make_excel()`, el mismo código de la versión 1.
 
 La librería de mapas (MapLibre GL 4.7.1) está guardada en `web/vendor/`, así que la app no la descarga de internet.
 
