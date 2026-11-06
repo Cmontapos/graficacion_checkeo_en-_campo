@@ -32,16 +32,7 @@ if not exist .venv (
 .venv\Scripts\python -m PyInstaller --noconfirm --clean GasLab.spec || goto :error
 
 rem 3. Comprobacion: sin el DLL de Python el .exe falla con "Failed to load Python DLL ... python3XX.dll".
-if not exist dist\GasLab\_internal\python3*.dll goto :version
-echo.
-echo ERROR: este Python no sirve para compilar GasLab (pandas no tiene paquetes listos para el):
-python -c "import sys, platform; print('   Python', platform.python_version(), platform.architecture()[0])"
-echo Hace falta Python 3.10 a 3.14 de 64 bits. Instala Python 3.13 (Windows installer 64-bit) desde
-echo https://www.python.org/downloads/ marcando "Add python.exe to PATH". Si dejas tambien el otro,
-echo desinstalalo o ponlo despues en el PATH, y vuelve a ejecutar este archivo.
-goto :fallo
-
-:sin_dll
+if not exist dist\GasLab\_internal\python3*.dll goto :sin_dll
 if not exist dist\GasLab\_internal\web\index.html goto :sin_dll
 echo.
 echo Listo: dist\GasLab\GasLab.exe  (copia la carpeta dist\GasLab completa, no solo el .exe)
@@ -59,6 +50,15 @@ echo ERROR: el Python del PATH es el de Microsoft Store; con el el .exe no arran
 echo Instala Python 3.11 desde https://www.python.org/downloads/ marcando "Add python.exe to PATH",
 echo desactiva los alias "python.exe" en Configuracion ^> Aplicaciones ^> Alias de ejecucion de aplicaciones
 echo y vuelve a ejecutar este archivo.
+goto :fallo
+
+:version
+echo.
+echo ERROR: este Python no sirve para compilar GasLab (pandas no tiene paquetes listos para el):
+python -c "import sys, platform; print('   Python', platform.python_version(), platform.architecture()[0])"
+echo Hace falta Python 3.10 a 3.14 de 64 bits. Instala Python 3.13 (Windows installer 64-bit) desde
+echo https://www.python.org/downloads/ marcando "Add python.exe to PATH". Si dejas tambien el otro,
+echo desinstalalo o ponlo despues en el PATH, y vuelve a ejecutar este archivo.
 goto :fallo
 
 :sin_dll
