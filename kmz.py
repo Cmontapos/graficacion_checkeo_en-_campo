@@ -39,7 +39,7 @@ def _png(image):
 def _num(v):
     v = float(v)
     text = f'{v:,.1f}' if abs(v) >= 100 else f'{v:,.2f}' if abs(v) >= 1 else f'{v:,.4f}'
-    return text.replace(',', ' ').replace('.', ',')
+    return text  # en inglés: coma de miles y punto decimal
 
 
 def overlay_png(rgba, corners):
@@ -62,7 +62,7 @@ def _coord(lon, lat, alt=None):
 def route_kml(routes, visible=True):
     """routes = [(nombre, clave de color, segmentos)], cada segmento con listas lon, lat y when (UTC ISO). Una línea
     pegada al suelo por segmento (sin unir pausas) y los puntos de Inicio y Fin con su hora."""
-    out = [f'<Folder><name>Ruta GPS</name><visibility>{int(visible)}</visibility>']
+    out = [f'<Folder><name>GPS route</name><visibility>{int(visible)}</visibility>']
     for name, key, segments in routes:
         color = kml_color(ROUTE_COLORS.get(key, '#007f86'))
         out.append(f'<Folder><name>{escape(name)}</name>')
@@ -70,11 +70,11 @@ def route_kml(routes, visible=True):
             if len(seg['lon']) < 2:  # un punto suelto (entre huecos de GPS) no hace línea
                 continue
             coords = ' '.join(_coord(x, y) for x, y in zip(seg['lon'], seg['lat']))
-            out.append(f'<Placemark><name>Tramo {k}</name><Style><LineStyle><color>{color}</color><width>3</width></LineStyle></Style>'
+            out.append(f'<Placemark><name>Segment {k}</name><Style><LineStyle><color>{color}</color><width>3</width></LineStyle></Style>'
                        f'<LineString><tessellate>1</tessellate><altitudeMode>clampToGround</altitudeMode><coordinates>{coords}</coordinates></LineString></Placemark>')
         if segments:
             first, last = segments[0], segments[-1]
-            for label, seg, i in (('Inicio', first, 0), ('Fin', last, -1)):  # la hora va en la descripción (sin TimeStamp)
+            for label, seg, i in (('Start', first, 0), ('End', last, -1)):  # la hora va en la descripción (sin TimeStamp)
                 when = f"<description>{seg['when'][i]}</description>" if seg.get('when') else ''
                 out.append(f'<Placemark><name>{label} · {escape(name)}</name>{when}<Point><coordinates>{_coord(seg["lon"][i], seg["lat"][i])}</coordinates></Point></Placemark>')
         out.append('</Folder>')
@@ -110,7 +110,7 @@ def bars_kml(name, lon, lat, values, klass, vmin, vmax, height=100.0, width=2.0,
     """Barras 3D como en la app: un prisma por muestra, de alto proporcional al valor, desde el suelo."""
     span = (vmax - vmin) or 1.0
     half = width / 2
-    out = [f'<Folder><name>Barras 3D</name><visibility>{int(visible)}</visibility>']
+    out = [f'<Folder><name>3D bars</name><visibility>{int(visible)}</visibility>']
     for i in range(len(values)):
         h = 0.5 + (values[i] - vmin) / span * height
         dy, dx = half / 111320, half / (111320 * np.cos(np.radians(lat[i])))
@@ -125,18 +125,18 @@ def bars_kml(name, lon, lat, values, klass, vmin, vmax, height=100.0, width=2.0,
 
 def overlay_kml(bounds, opacity_note=''):
     north, south, east, west = bounds
-    return (f'<GroundOverlay><name>Nube de calor{escape(opacity_note)}</name><Icon><href>files/nube.png</href></Icon>'
+    return (f'<GroundOverlay><name>Heat cloud{escape(opacity_note)}</name><Icon><href>files/cloud.png</href></Icon>'
             f'<LatLonBox><north>{north:.8f}</north><south>{south:.8f}</south><east>{east:.8f}</east><west>{west:.8f}</west></LatLonBox></GroundOverlay>')
 
 
 def legend_kml(name, classes, lon, lat):
     """Punto «Leyenda» en (lon, lat), junto a los datos: al hacer clic muestra la tabla de colores. No es una leyenda
     fija en pantalla (ScreenOverlay) porque Google Earth en el navegador rechaza el archivo si la trae."""
-    pct = lambda c: f'{c["pct"]:.1f} %'.replace('.', ',')
-    rows = ''.join(f'<tr><td style="background:{c["color"]};width:16px"></td><td>{_num(c["lo"])} a {_num(c["hi"])}</td>'
+    pct = lambda c: f'{c["pct"]:.1f} %'
+    rows = ''.join(f'<tr><td style="background:{c["color"]};width:16px"></td><td>{_num(c["lo"])} to {_num(c["hi"])}</td>'
                    f'<td style="text-align:right">{pct(c)}</td></tr>' for c in reversed(classes))
     table = f'<b>{escape(name)}</b><table cellpadding="3">{rows}</table>'
-    return (f'<Placemark><name>Leyenda · {escape(name)}</name><description><![CDATA[{table}]]></description>'
+    return (f'<Placemark><name>Legend · {escape(name)}</name><description><![CDATA[{table}]]></description>'
             f'<Point><coordinates>{_coord(lon, lat)}</coordinates></Point></Placemark>')
 
 

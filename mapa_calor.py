@@ -94,7 +94,7 @@ def grid(x, y, values, cell, stat='media', smooth=0.0):
     ok = np.isfinite(x) & np.isfinite(y) & (np.isfinite(values) if stat != 'muestras' else True)
     x, y, v = x[ok], y[ok], (values[ok] if stat != 'muestras' else np.ones(ok.sum()))
     if not len(x):
-        raise ValueError('No hay muestras con posición y valor para el mapa de calor.')
+        raise ValueError('There are no samples with a position and a value for the heat map.')
     margin = int(math.ceil(3 * smooth)) * cell
     x0 = math.floor(x.min() / cell) * cell - margin
     y0 = math.floor(y.min() / cell) * cell - margin
@@ -204,7 +204,7 @@ def _pipe(lo, hi, opacity, ramp=RAMP, steps=12):
 
 BASEMAPS = (
     ('OpenStreetMap_7d0f0b5a_3c2e_4e8a_9b1d_000000000001', 'OpenStreetMap', 'https://tile.openstreetmap.org/%7Bz%7D/%7Bx%7D/%7By%7D.png', False),
-    ('Esri_satelite_7d0f0b5a_3c2e_4e8a_9b1d_000000000002', 'Esri satelite',
+    ('Esri_satelite_7d0f0b5a_3c2e_4e8a_9b1d_000000000002', 'Esri satellite',
      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%7Bz%7D/%7By%7D/%7Bx%7D', True),
 )
 WEB_LIMIT = 20037508.342789244
@@ -342,7 +342,7 @@ def write_points(path, lat, lon, values, name, times=None):
     for i in keep[np.argsort(values[keep], kind='stable')]:  # de menor a mayor: los valores altos quedan encima
         props = {name: float(values[i])}
         if times is not None and times[i]:
-            props['fecha_utc'] = str(times[i])
+            props['time_utc'] = str(times[i])
         features.append({'type': 'Feature', 'geometry': {'type': 'Point', 'coordinates': [round(float(lon[i]), 8), round(float(lat[i]), 8)]},
                          'properties': props})
     Path(path).write_text(json.dumps({'type': 'FeatureCollection', 'features': features}), encoding='utf-8')
@@ -440,7 +440,7 @@ def adaptive_classes(values, bins=20, min_pct=0.0, spacing='lineal'):
     values = np.asarray(values, float)
     values = values[np.isfinite(values)]
     if not len(values):
-        raise ValueError('No hay valores para la escala de colores.')
+        raise ValueError('There are no values for the color scale.')
     lo, hi = float(values.min()), float(values.max())
     if hi <= lo:
         return np.array([lo, lo]), np.array([len(values)])
@@ -547,7 +547,7 @@ def cloud(lon, lat, values, edges, size_m=1.0, opacity=0.95, bounds=None, res=No
     lon, lat, values = (np.asarray(a, float) for a in (lon, lat, values))
     ok = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(values)
     if not ok.any():
-        raise ValueError('No hay muestras con posición y valor para el mapa de calor.')
+        raise ValueError('There are no samples with a position and a value for the heat map.')
     sigma = cell_units(float(size_m), float(np.median(lat[ok])))  # metros de terreno -> unidades de Web Mercator
     x, y = mercator(lon[ok], lat[ok])
     values = values[ok]
@@ -642,23 +642,23 @@ def _classes_pipe(edges, colors, opacity=0.85):
 
 def export_cloud(folder, name, lon, lat, values, edges, size_m=1.0, opacity=0.95, times=None, title='', cool=0.0,
                  reach=CLOUD_REACH):
-    """Escribe en `folder`: <name>_nube.tif (RGBA, como en la app), <name>_valores.tif (Float32 con la escala por
-    divisiones, con el mismo enfriamiento), <name>_puntos.geojson y <name>.qgz (nube encendida sobre Esri satelite).
+    """Escribe en `folder`: <name>_cloud.tif (RGBA, como en la app), <name>_values.tif (Float32 con la escala por
+    divisiones, con el mismo enfriamiento), <name>_points.geojson y <name>.qgz (nube encendida sobre Esri satelite).
     Devuelve las rutas."""
     folder = Path(folder)
     lon, lat, values = (np.asarray(a, float) for a in (lon, lat, values))
     c = cloud(lon, lat, values, edges, size_m, opacity, cool=cool, reach=reach)
     colors = class_colors(len(edges) - 1)
-    nube, valores = folder / f'{name}_nube.tif', folder / f'{name}_valores.tif'
+    nube, valores = folder / f'{name}_cloud.tif', folder / f'{name}_values.tif'
     write_rgba_geotiff(nube, c['rgba'], c['x0'], c['y_top'], c['res'])
     write_geotiff(valores, c['values'], c['x0'], c['y_top'], c['res'])
-    geojson = folder / f'{name}_puntos.geojson'
+    geojson = folder / f'{name}_points.geojson'
     write_points(geojson, lat, lon, values, name, times)
     lo, hi = float(edges[0]), float(edges[-1])
     ok = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(values)
     extent = (float(lon[ok].min()), float(lat[ok].min()), float(lon[ok].max()), float(lat[ok].max()))
-    layers = [(nube, f'{name} · nube {size_m:g} m (píxel {c["res"] * math.cos(math.radians(float(np.median(lat[ok])))):.2g} m)', (0, 255), 1.0, True, _rgba_pipe()),
-              (valores, f'{name} · valores por división', (lo, hi if hi > lo else lo + 1), opacity, False, _classes_pipe(edges, colors, opacity))]
-    points = (geojson, f'{name} · muestras', name, (lo, hi), 1.6, extent, (edges, colors))
+    layers = [(nube, f'{name} · cloud {size_m:g} m (pixel {c["res"] * math.cos(math.radians(float(np.median(lat[ok])))):.2g} m)', (0, 255), 1.0, True, _rgba_pipe()),
+              (valores, f'{name} · values by division', (lo, hi if hi > lo else lo + 1), opacity, False, _classes_pipe(edges, colors, opacity))]
+    points = (geojson, f'{name} · samples', name, (lo, hi), 1.6, extent, (edges, colors))
     qgz = write_qgis(folder / f'{name}.qgz', layers, title or name, points)
     return [nube, valores, geojson, qgz]

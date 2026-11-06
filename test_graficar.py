@@ -102,7 +102,7 @@ class GraphTests(unittest.TestCase):
             names = book.namelist()
             sheet = book.read('xl/worksheets/sheet2.xml').decode()
             workbook = book.read('xl/workbook.xml').decode()
-        for name in ('Resumen', 'Datos', 'Gráficas', 'Ruta'):
+        for name in ('Summary', 'Data', 'Charts', 'Route'):
             self.assertIn(f'name="{name}"', workbook)
         self.assertEqual(sum(n.startswith('xl/charts/chart') for n in names), 3)  # 2 variables + ruta
         self.assertIn('<dimension ref="A1:F4"/>', sheet)  # encabezado + 3 filas del tramo
@@ -118,10 +118,23 @@ class GraphTests(unittest.TestCase):
 
     def test_excel_exported_by_gaslab_goes_back_to_utc(self):
         path = make_excel(self.frame, Path(self.directory.name) / 'exportado.xlsx', ['co2_ppm'], zone='America/Costa_Rica')
-        frame = load_csv(path)  # hoja Datos, con 'Fecha y hora (America/Costa_Rica)' en hora local
-        self.assertNotIn('Transcurrido (s)', frame)
+        frame = load_csv(path)  # hoja Data, con 'Date and time (America/Costa_Rica)' en hora local
+        self.assertNotIn('Elapsed (s)', frame)
         self.assertEqual(time_axis(frame, 'fecha', 'fecha_hora_utc')[2].tolist(), time_axis(self.frame, 'fecha', 'fecha_hora_utc')[2].tolist())
         self.assertEqual(numeric(frame['co2_ppm']).tolist(), numeric(self.frame['co2_ppm']).tolist())
+
+    def test_old_spanish_excel_still_opens(self):
+        import openpyxl
+        path = make_excel(self.frame, Path(self.directory.name) / 'viejo.xlsx', ['co2_ppm'], zone='America/Costa_Rica')
+        book = openpyxl.load_workbook(path)  # como lo exportaban las versiones en español
+        book['Data'].title = 'Datos'
+        sheet = book['Datos']
+        sheet['A1'] = 'Fecha y hora (America/Costa_Rica)'
+        sheet['B1'] = 'Transcurrido (s)'
+        book.save(path)
+        frame = load_csv(path)
+        self.assertNotIn('Transcurrido (s)', frame)
+        self.assertEqual(time_axis(frame, 'fecha', 'fecha_hora_utc')[2].tolist(), time_axis(self.frame, 'fecha', 'fecha_hora_utc')[2].tolist())
 
     def test_excel_sheet_default_and_choice(self):
         path = Path(self.directory.name) / 'hojas.xlsx'
@@ -139,7 +152,7 @@ class GraphTests(unittest.TestCase):
     def test_old_xls_gives_a_clear_error(self):
         path = Path(self.directory.name) / 'viejo.xls'
         path.write_bytes(b'\xd0\xcf\x11\xe0')
-        with self.assertRaisesRegex(ValueError, 'guárdalo como .xlsx'):
+        with self.assertRaisesRegex(ValueError, 'save it as .xlsx'):
             load_csv(path)
 
 

@@ -110,7 +110,7 @@ class Dataset:
         self.sheet, self.sheets = frame.attrs.get('sheet'), frame.attrs.get('sheets', [])  # solo en Excel
         self.time_column = g.find_time_column(frame, 'fecha_hora_utc')
         if not self.time_column:
-            raise ValueError('No se encontró una columna de tiempo (fecha_hora_utc, timestamp, TIMESTAMP...).')
+            raise ValueError('No time column was found (fecha_hora_utc, timestamp, TIMESTAMP...).')
         dates = g.parse_time(frame, self.time_column)
         ok = dates.notna().to_numpy()
         frame, self.dates = frame[ok].reset_index(drop=True), dates[ok].reset_index(drop=True)
@@ -147,7 +147,7 @@ class Dataset:
         lo = int(np.searchsorted(sorted_t, w0, 'left')) if w0 is not None else 0
         hi = int(np.searchsorted(sorted_t, w1, 'right')) if w1 is not None else self.rows
         if hi <= lo:
-            raise ValueError('No hay muestras en el tramo elegido.')
+            raise ValueError('There are no samples in the chosen segment.')
         return lo, hi
 
     def tramos(self, zone, gap_s=1200):
@@ -177,10 +177,10 @@ class Dataset:
         Si el dron no trae altura se usa la del archivo."""
         if gps == 'dron':
             if not self.drone:
-                raise ValueError('Este archivo no tiene columnas con el GPS del dron.')
+                raise ValueError('This file has no drone GPS columns.')
             return self.drone['lat'], self.drone['lon'], self.drone['alt'] or self.alt_col
         if gps != 'sensor':
-            raise ValueError(f'Fuente de GPS desconocida: {gps}.')
+            raise ValueError(f'Unknown GPS source: {gps}.')
         return self.lat_col, self.lon_col, self.alt_col
 
     def drone_info(self):
@@ -237,9 +237,10 @@ class Dataset:
                          'shown': int(len(keep)), 'total': int(i1 - i0)}
             if name in limits:
                 low, high = limits[name]
-                out[name].update(limits=[low, high], valid=int(np.isfinite(raw).sum()),
-                                 below=int((raw < low).sum()) if low is not None else 0,
-                                 above=int((raw > high).sum()) if high is not None else 0)
+                part = raw[window[0]:window[1]] if window else raw  # el conteo es del tramo elegido (o de todo)
+                out[name].update(limits=[low, high], valid=int(np.isfinite(part).sum()),
+                                 below=int((part < low).sum()) if low is not None else 0,
+                                 above=int((part > high).sum()) if high is not None else 0)
                 if original:
                     out[name]['original'] = line(raw)
             if paired:
@@ -253,15 +254,15 @@ class Dataset:
         """(lon, lat, valor ajustado, hora UTC, altura o None) de las muestras con GPS válido y valor."""
         lat_col, lon_col, alt_col = self.gps_columns(gps)
         if not (lat_col and lon_col):
-            raise ValueError('Este archivo no tiene columnas de latitud/longitud: no se puede hacer el mapa de calor.')
+            raise ValueError('This file has no latitude/longitude columns: the heat map cannot be made.')
         if name not in self.columns:
-            raise ValueError(f'No existe la variable {name}.')
+            raise ValueError(f'The variable {name} does not exist.')
         lat, lon, values = self.columns[lat_col], self.columns[lon_col], self.values(name, limits)
         ok = np.asarray(g.gps_valid(pd.Series(lat), pd.Series(lon))) & np.isfinite(values)
         if window:
             ok[:window[0]] = ok[window[1]:] = False
         if not ok.any():
-            raise ValueError(f'{name} no tiene muestras con GPS {"del dron " if gps == "dron" else ""}válido{" en este tramo" if window else ""}.')
+            raise ValueError(f'{name} has no samples with a valid {"drone " if gps == "dron" else ""}GPS{" in this segment" if window else ""}.')
         alt = self.columns[alt_col][ok] if alt_col in self.columns else None
         return lon[ok], lat[ok], values[ok], self.dates[ok].dt.strftime('%Y-%m-%dT%H:%M:%SZ').to_numpy(), alt
 
@@ -383,23 +384,23 @@ class Dataset:
     def kmz_routes(self, gps, window):
         """[(nombre, clave de color, segmentos)]: la del GPS elegido, o las dos con 'ambos'."""
         sources = ('dron', 'sensor') if gps == 'ambos' else (gps,)
-        names = {'sensor': 'GPS del sensor', 'dron': 'GPS del dron'}
+        names = {'sensor': 'Sensor GPS', 'dron': 'Drone GPS'}
         return [(names[s], s, self.route_segments(s, window)) for s in sources]
 
     def kmz(self, kind, name=None, limits=None, bins=20, min_pct=0.0, spacing='original', look=(1.0, 0.95, 1.0, 2.5), gps='sensor', window=None,
             bars=(100.0, 2.0), mode='measured', offset=0.0, tag=''):
         """(nombre, bytes) del KMZ para Google Earth.
-        kind 'route': la ruta (paso 1). Paso 3, según la vista: 'heat' (2D) = nube, leyenda y ruta; 'bars' (3D) = barras,
+        kind 'route': la ruta (paso 1). Paso 4, según la vista: 'heat' (2D) = nube, leyenda y ruta; 'bars' (3D) = barras,
         leyenda y ruta. 'terrain': puntos a su altura (mode 'measured' = medida + offset, 'ground' = pegados al terreno, offset sobre
-        él), leyenda y ruta (paso 4). gps: 'sensor', 'dron' o 'ambos' (solo cambia la ruta; los mapas usan el dron)."""
-        suffix = {'route': '', 'heat': '', 'bars': 'barras3d', 'terrain': '3d'}[kind]
-        base = re.sub(r'[^\w.-]+', '_', '_'.join(filter(None, (self.name, name if kind != 'route' else 'ruta', suffix, tag)))).strip('_')
-        title = f'{self.name} · ' + ({'route': 'ruta GPS', 'heat': f'mapa de calor de {name}', 'bars': f'barras 3D de {name}',
-                                      'terrain': f'{name} en 3D'}[kind])
+        él), leyenda y ruta (paso 5). gps: 'sensor', 'dron' o 'ambos' (solo cambia la ruta; los mapas usan el dron)."""
+        suffix = {'route': '', 'heat': '', 'bars': 'bars3d', 'terrain': '3d'}[kind]
+        base = re.sub(r'[^\w.-]+', '_', '_'.join(filter(None, (self.name, name if kind != 'route' else 'route', suffix, tag)))).strip('_')
+        title = f'{self.name} · ' + ({'route': 'GPS route', 'heat': f'{name} heat map', 'bars': f'{name} 3D bars',
+                                      'terrain': f'{name} in 3D'}[kind])
         routes = self.kmz_routes(gps, window)
         if kind == 'route':
             if not any(segs for _, _, segs in routes):
-                raise ValueError('No hay posiciones GPS válidas para exportar la ruta.')
+                raise ValueError('There are no valid GPS positions to export the route.')
             return base + '.kmz', kmz.build(title, [kmz.route_kml(routes)], {})
         source = 'dron' if gps in ('dron', 'ambos') else 'sensor'
         lon, lat, values, times, alt = self.heat_samples(name, limits, source, window)
@@ -419,18 +420,18 @@ class Dataset:
         if kind == 'heat':
             size_m, opacity, cool, reach = look
             cloud = mc.cloud(lon, lat, values, edges, size_m, opacity, cool=cool, reach=reach)
-            files['files/nube.png'], bounds = kmz.overlay_png(cloud['rgba'], cloud['corners'])
+            files['files/cloud.png'], bounds = kmz.overlay_png(cloud['rgba'], cloud['corners'])
             parts.append(kmz.overlay_kml(bounds))
         elif kind == 'bars':
             parts.append(kmz.bars_kml(name, sample(lon), sample(lat), sample(values), sample(klass), float(edges[0]), float(edges[-1]), *bars, visible=True))
         else:
             if mode == 'ground' or alt is None:
                 heights, how, extrude = np.full(len(pick), max(offset, 0.0)), 'relativeToGround', offset > 0
-                notes = [f'<br>Pegada al terreno{f", {offset:g} m sobre él" if offset > 0 else ""}'] * len(pick)
+                notes = [f'<br>On the ground{f", {offset:g} m above it" if offset > 0 else ""}'] * len(pick)
             else:
                 heights, how, extrude = alt[pick] + offset, 'absolute', True
-                notes = [f'<br>Altura: {h:.1f} m' + (f' (medida {a:.1f} m, desfase {offset:+g} m)' if offset else '') for h, a in zip(heights, alt[pick])]
-            parts.append(kmz.points_kml(name, 'Muestras en 3D', sample(lon), sample(lat), sample(values), sample(klass), sample(times),
+                notes = [f'<br>Altitude: {h:.1f} m' + (f' (measured {a:.1f} m, offset {offset:+g} m)' if offset else '') for h, a in zip(heights, alt[pick])]
+            parts.append(kmz.points_kml(name, 'Samples in 3D', sample(lon), sample(lat), sample(values), sample(klass), sample(times),
                                         heights, how, extrude, notes=notes))
         parts.append(kmz.route_kml(routes))
         return base + '.kmz', kmz.build(title, parts, files, kmz.styles_kml(colors))
@@ -438,28 +439,28 @@ class Dataset:
     def excel_parts(self, names, zone, start=None, end=None, gps='sensor', tag='', limits=None):
         """Lo que va al libro Excel: variables elegidas, tramo visible (start/end en ms 'de reloj' de la zona) y GPS.
         gps: 'sensor', 'dron' o 'ambos' (las dos posiciones en Datos; la hoja Ruta usa la del dron).
-        limits: los del paso 2 ({nombre: (mínimo, máximo)}); las variables van ya ajustadas, como en los mapas."""
+        limits: los del paso 3 ({nombre: (mínimo, máximo)}), solo si en el paso 6 se marca aplicarlos; las variables van ya ajustadas."""
         names = [n for n in names if n in self.columns]
         if not names:
-            raise ValueError('Marca al menos una variable para exportar (paso 1).')
+            raise ValueError('Select at least one variable to export (step 1).')
         _, sorted_t = self.local_ms(zone)
         i0 = int(np.searchsorted(sorted_t, start, 'left')) if start is not None else 0
         i1 = int(np.searchsorted(sorted_t, end, 'right')) if end is not None else self.rows
         if i1 <= i0:
-            raise ValueError('No hay muestras en el tramo elegido.')
+            raise ValueError('There are no samples in the chosen segment.')
         route = self.gps_columns('dron' if gps == 'ambos' else gps)
         place = [c for c in (*route, *(self.gps_columns('sensor') if gps == 'ambos' else ())) if c in self.columns and c not in names]
         frame = pd.DataFrame({'fecha_hora_utc': self.dates.iloc[i0:i1].reset_index(drop=True),
                               **{c: (self.values(c, limits) if c in names else self.columns[c])[i0:i1] for c in dict.fromkeys(names + place)}})
         stamp = ('_' + tag if tag else '') + ('' if start is None and end is None else '_' + self.dates.iloc[i0].tz_convert(ZoneInfo(zone)).strftime('%Y%m%d_%H%M'))
-        filename = re.sub(r'[^\w.-]+', '_', self.name + ('_calibrado' if self.calibrated else '') + stamp).strip('_') + '.xlsx'
+        filename = re.sub(r'[^\w.-]+', '_', self.name + ('_calibrated' if self.calibrated else '') + stamp).strip('_') + '.xlsx'
         used = {n: limits[n] for n in names if n in (limits or {})}
-        bounds = ', '.join(f'{n} ' + ' y '.join(t for t in (low is not None and f'mín {low:g}', high is not None and f'máx {high:g}') if t)
+        bounds = ', '.join(f'{n} ' + ' and '.join(t for t in (low is not None and f'min {low:g}', high is not None and f'max {high:g}') if t)
                            for n, (low, high) in used.items())
         options = dict(columns=names, time_column='fecha_hora_utc', zone=zone,
-                       title=self.name + (' · calibrado' if self.calibrated else '') + (f' · límites: {bounds}' if bounds else ''),
+                       title=self.name + (' · calibrated' if self.calibrated else '') + (f' · limits: {bounds}' if bounds else ''),
                        gps=route[:2] if route[0] and route[1] and route[0] in self.columns else None, also=place,
-                       route_name='Ruta GPS del dron' if gps in ('dron', 'ambos') else 'Ruta GPS')
+                       route_name='Drone GPS route' if gps in ('dron', 'ambos') else 'GPS route')
         return frame, filename, options, (i0, i1)
 
     def excel(self, names, zone, start=None, end=None, gps='sensor', tag='', limits=None):
@@ -500,7 +501,7 @@ class Dataset:
         return {'filename': filename, 'title': options['title'], 'zone': zone, 'rows': len(frame),
                 'from': local.iloc[0].strftime('%d/%m/%Y %H:%M:%S'), 'to': local.iloc[-1].strftime('%d/%m/%Y %H:%M:%S'),
                 'duration': f'{secs // 3600} h {secs % 3600 // 60:02d} min {secs % 60:02d} s', 'stats': stats,
-                'headers': [f'Fecha y hora ({zone})', 'Transcurrido (s)', *data_cols],
+                'headers': [f'Date and time ({zone})', 'Elapsed (s)', *data_cols],
                 'first': [head(k) for k in range(min(rows, len(frame)))],
                 'last': [head(k) for k in range(max(rows, len(frame) - 3), len(frame))],
                 'charts': {n: {'x': series[n]['x'], 'y': series[n]['y']} for n in names if n in series}, 'route': route}
@@ -512,7 +513,7 @@ def parse_limits(text):
     for name, pair in (json.loads(text) if text else {}).items():
         low, high = (None if v is None else float(v) for v in pair)
         if low is not None and high is not None and low > high:
-            raise ValueError(f'En {name} el mínimo ({low:g}) es mayor que el máximo ({high:g}).')
+            raise ValueError(f'In {name} the minimum ({low:g}) is greater than the maximum ({high:g}).')
         if low is not None or high is not None:
             limits[name] = (low, high)
     return limits
@@ -638,7 +639,7 @@ class Handler(BaseHTTPRequestHandler):
             if url.path in ('/api/series', '/api/route', '/api/heat', '/api/heat/image', '/api/heat.zip', '/api/terrain', '/api/excel', '/api/excel/preview', '/api/tramos', '/api/kmz'):
                 dataset = DATASETS.get(query.get('id', ''))
                 if not dataset:
-                    return self.fail('El archivo ya no está cargado; ábrelo de nuevo.', 404)
+                    return self.fail('The file is no longer loaded; open it again.', 404)
                 zone = query.get('zone', g.DEFAULT_ZONE)
                 ZoneInfo(zone)  # zona inválida -> error claro
                 gps = query.get('gps', 'sensor')  # posiciones de los mapas: 'sensor' o 'dron'
@@ -662,7 +663,7 @@ class Handler(BaseHTTPRequestHandler):
                 if url.path == '/api/kmz':
                     kind = query.get('kind', 'heat')
                     if kind not in ('route', 'heat', 'bars', 'terrain'):
-                        raise ValueError(f'Exportación KMZ desconocida: {kind}.')
+                        raise ValueError(f'Unknown KMZ export: {kind}.')
                     look = (number('size') or 1.0, number('opacity') if number('opacity') is not None else 0.95,
                             number('cool') if number('cool') is not None else 1.0, number('reach') or 2.5)
                     filename, body = dataset.kmz(kind, query.get('var'), parse_limits(query.get('limits')), int(number('bins') or 20),
@@ -682,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
                     if url.path == '/api/heat/image':
                         bbox = [float(v) for v in query.get('bbox', '').split(',')]
                         if len(bbox) != 4:
-                            raise ValueError('Falta la zona visible (bbox).')
+                            raise ValueError('The visible area (bbox) is missing.')
                         return self.reply(dataset.heat_image(*scale, *look, bbox, number('zoom') or 15, number('dpr') or 1, gps=gps, window=window))
                     filename, body = dataset.heat_zip(*scale, *look, gps=gps, window=window)
                     return self.download(filename, body, 'application/zip')
@@ -698,7 +699,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply((Path(plotly.__file__).parent / 'package_data' / 'plotly.min.js').read_bytes(), self.STATIC['.js'])
             file = WEB_DIR / ('index.html' if url.path == '/' else url.path.lstrip('/'))
             if file.resolve().parent not in (WEB_DIR.resolve(), (WEB_DIR / 'vendor').resolve()) or not file.is_file() or file.suffix not in self.STATIC:
-                return self.fail('No encontrado', 404)
+                return self.fail('Not found', 404)
             return self.reply(file.read_bytes(), self.STATIC[file.suffix])
         except (ValueError, KeyError) as exc:
             return self.fail(str(exc))
@@ -709,10 +710,10 @@ class Handler(BaseHTTPRequestHandler):
             PAGES.bye(parse_qs(url.query).get('page', [''])[-1], time.monotonic())
             return self.reply({})
         if url.path != '/api/upload':
-            return self.fail('No encontrado', 404)
+            return self.fail('Not found', 404)
         size = int(self.headers.get('Content-Length') or 0)
         if not size or size > MAX_UPLOAD:
-            return self.fail('El archivo está vacío o pesa más de 1 GB.')
+            return self.fail('The file is empty or larger than 1 GB.')
         name = self.headers.get('X-Filename', 'datos.csv')
         try:
             sheet = self.headers.get('X-Sheet')  # hoja de Excel elegida en la página; sin ella, la de siempre
@@ -720,7 +721,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self.fail(str(exc))
         except Exception as exc:  # cualquier CSV raro: mostrar el motivo en la página en lugar de cortar la conexión
-            return self.fail(f'No se pudo abrir el archivo: {exc}')
+            return self.fail(f'Could not open the file: {exc}')
         return self.reply({'id': key, **dataset.info()})
 
     def log_message(self, *args):
@@ -758,15 +759,15 @@ def close_when_unused(server):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='GasLab 2.0 en el navegador.')
-    parser.add_argument('--puerto', type=int, default=0, help='puerto local (0 = uno libre)')
-    parser.add_argument('--sin-navegador', action='store_true', help='no abrir el navegador automáticamente')
+    parser = argparse.ArgumentParser(description='GasLab 2.0 in the browser.')
+    parser.add_argument('--puerto', type=int, default=0, help='local port (0 = any free port)')
+    parser.add_argument('--sin-navegador', action='store_true', help='do not open the browser automatically')
     parser.add_argument('--ventana', action='store_true', default=getattr(sys, 'frozen', False),
-                        help='abrir en una ventana propia (Edge o Chrome) y cerrar GasLab al cerrarla; siempre en el .exe')
+                        help='open in its own window (Edge or Chrome) and close GasLab when it closes; always on in the .exe')
     args = parser.parse_args()
     server = ThreadingHTTPServer(('127.0.0.1', args.puerto), Handler)
     url = f'http://127.0.0.1:{server.server_address[1]}/'
-    print(f'GasLab 2.0 en {url}  (Ctrl+C para cerrar)')
+    print(f'GasLab 2.0 at {url}  (Ctrl+C to quit)')
     if args.ventana:
         threading.Thread(target=close_when_unused, args=(server,), daemon=True).start()
     if not args.sin_navegador:

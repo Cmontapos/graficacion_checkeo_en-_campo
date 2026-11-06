@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,130 +15,148 @@
 <header class="top">
   <div class="brand">GasLab <span>2.0</span></div>
   <nav class="tabs" id="tabs">
-    <button class="tab on" data-step="1">1 · Datos</button>
-    <button class="tab" data-step="2" disabled title="Abre un archivo primero">2 · Límites</button>
-    <button class="tab" data-step="3" disabled title="Abre un archivo primero">3 · Mapa de calor</button>
-    <button class="tab" data-step="4" disabled title="Abre un archivo primero">4 · Terreno 3D</button>
-    <button class="tab" data-step="5" disabled title="Abre un archivo primero">5 · Excel</button>
+    <button class="tab on" data-step="datos">1 · Data</button>
+    <button class="tab" data-step="analisis" disabled title="Open a file first">2 · Analysis</button>
+    <button class="tab" data-step="calor" disabled title="Open a file first">3 · Heat map</button>
+    <button class="tab" data-step="terreno" disabled title="Open a file first">4 · 3D terrain</button>
+    <button class="tab" data-step="excel" disabled title="Open a file first">5 · Excel</button>
   </nav>
-  <label class="button primary">Abrir archivo…<input id="file" type="file" accept=".csv,.txt,text/csv,.dat,.xlsx,.xlsm" hidden></label>
-  <div id="fileinfo" class="fileinfo">Ningún archivo abierto</div>
-  <div class="seg" id="calbox" hidden title="Este archivo trae columnas calibradas (_cal): elige cuáles usar. Se recuerda para los próximos archivos.">
-    <button data-cal="original">Original</button><button data-cal="cal">Calibrado</button><button data-cal="compare" title="Las gráficas muestran las dos versiones; los mapas usan la calibrada">Comparación</button>
+  <label class="button primary">Open file…<input id="file" type="file" accept=".csv,.txt,text/csv,.dat,.xlsx,.xlsm" hidden></label>
+  <div id="fileinfo" class="fileinfo">No file open</div>
+  <div class="seg" id="calbox" hidden title="This file has calibrated columns (_cal): choose which to use. Remembered for the next files.">
+    <button data-cal="original">Original</button><button data-cal="cal">Calibrated</button><button data-cal="compare" title="Charts show both versions; maps use the calibrated one">Comparison</button>
   </div>
-  <div class="seg" id="gpsbox" hidden title="Este archivo trae también el GPS del dron: elige qué posiciones usan los mapas. Se recuerda para los próximos archivos.">
-    <button data-gps="sensor">GPS sensor</button><button data-gps="dron">Dron</button><button data-gps="both" title="La ruta muestra las dos; los mapas de calor y terreno usan la del dron">Ambos</button>
+  <div class="seg" id="gpsbox" hidden title="This file also has the drone GPS: choose which positions the maps use. Remembered for the next files.">
+    <button data-gps="sensor">Sensor GPS</button><button data-gps="dron">Drone</button><button data-gps="both" title="The route shows both; the heat and terrain maps use the drone's">Both</button>
   </div>
-  <label class="zone" id="sheetbox" hidden title="Este Excel tiene varias hojas con datos"><select id="sheet"></select></label>
-  <label class="zone">Zona horaria
+  <label class="zone" id="sheetbox" hidden title="This Excel file has several sheets with data"><select id="sheet"></select></label>
+  <label class="zone">Time zone
     <input id="zone" list="zones" value="UTC" spellcheck="false" autocomplete="off">
     <datalist id="zones"></datalist>
   </label>
-  <button id="theme" class="button themebtn" aria-label="Tema">◐</button>
+  <button id="theme" class="button themebtn" aria-label="Theme">◐</button>
 </header>
 
 <section id="empty" class="empty">
   <div class="drop">
-    <p class="big">Abre un CSV, un .dat de Campbell o un Excel (.xlsx) para empezar</p>
-    <p>Pulsa <b>Abrir archivo…</b> o arrastra el archivo aquí. Funciona con CSV de MicroGas Receptor, DJI, Simulado y Campbell (Flight_Data y .dat TOA5).</p>
+    <p class="big">Open a CSV, a Campbell .dat or an Excel file (.xlsx) to start</p>
+    <p>Click <b>Open file…</b> or drag the file here. Works with CSV files from MicroGas Receptor, DJI, Simulado and Campbell (Flight_Data and TOA5 .dat).</p>
   </div>
 </section>
 
 <section id="workspace" hidden>
- <div id="step1" class="step">
+ <div id="step-datos" class="step">
   <div class="card vars">
     <div class="vars-head">
       <h2>Variables</h2>
-      <input id="filter" type="search" placeholder="Filtrar…" spellcheck="false">
-      <button id="all" class="button">Todas</button>
+      <input id="filter" type="search" placeholder="Filter…" spellcheck="false">
+      <button id="all" class="button">All</button>
       <button id="gases" class="button">CO₂ · SO₂ · H₂S</button>
-      <button id="none" class="button">Ninguna</button>
+      <button id="none" class="button">None</button>
       <span id="note" class="note"></span>
     </div>
     <div id="varlist" class="varlist"></div>
   </div>
 
   <div class="card tramobar">
-    <span class="cfg-title">Tramo</span>
-    <label class="field" title="Una pausa mayor a este tiempo entre dos muestras divide la medición en otro tramo">Inactividad &gt; <input id="gap" type="number" min="1" max="86400" step="1" value="1200"> s</label>
-    <label class="field" title="Tramos continuos de la medición; limita las gráficas y los mapas al tramo elegido"><select id="tramo"></select></label>
+    <span class="cfg-title">Segment</span>
+    <label class="field" title="A pause longer than this between two samples splits the measurement into another segment">Idle &gt; <input id="gap" type="number" min="1" max="86400" step="1" value="1200"> s</label>
+    <label class="field" title="Continuous segments of the measurement; limits the charts and maps to the chosen segment"><select id="tramo"></select></label>
     <span class="sep">|</span>
-    <label class="field">Día <select id="day" class="short"></select></label>
-    <label class="field">de <select id="hfrom" class="short"></select></label>
-    <label class="field">a <select id="hto" class="short"></select></label>
-    <button id="alltime" class="button">Todo</button>
+    <label class="field">Day <select id="day" class="short"></select></label>
+    <label class="field">from <select id="hfrom" class="short"></select></label>
+    <label class="field">to <select id="hto" class="short"></select></label>
+    <button id="alltime" class="button">All</button>
+    <span class="sep">|</span>
+    <button id="pickrec" class="button" title="Click the start and then the end, on any step 1 chart: only that section is kept in every step (nothing is deleted)">Select section (2 clicks)</button>
     <span id="tramoinfo" class="muted"></span>
   </div>
 
   <div class="grid">
     <div class="left">
       <div class="card">
-        <div class="card-head"><h3>Ruta GPS</h3><span id="routeinfo" class="muted"></span><button id="routekmz" class="button small" title="La ruta (del tramo y GPS elegidos) para abrir en Google Earth">Google Earth (.kmz)</button></div>
+        <div class="card-head"><h3>GPS route</h3><span id="routeinfo" class="muted"></span><button id="routekmz" class="button small" title="The route (of the chosen segment and GPS) to open in Google Earth">Google Earth (.kmz)</button></div>
         <div id="map" class="plot map"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h3 id="alttitle">Altura</h3><span id="altinfo" class="muted"></span></div>
+        <div class="card-head"><h3 id="alttitle">Altitude</h3><span id="altinfo" class="muted"></span></div>
         <div id="alt" class="plot chart"></div>
       </div>
     </div>
     <div class="right">
-      <div class="right-head"><h2>Variables contra hora del día <span id="zonelabel" class="muted"></span></h2>
-        <button id="reset" class="button">Restablecer zoom</button></div>
+      <div class="right-head"><h2>Variables vs. time of day <span id="zonelabel" class="muted"></span></h2>
+        <button id="reset" class="button">Reset zoom</button></div>
+      <div class="right-tools">
+        <div class="seg" id="solo" title="All: the combined chart and one per variable. One variable: only that one, large."></div>
+        <div class="seg" id="norm" title="Combined chart: each variable from 0 to 100 % (between its minimum and maximum in view) or with its real values">
+          <button data-norm="1">Normalized</button><button data-norm="0">Real values</button>
+        </div>
+      </div>
+      <div class="card" id="allcard">
+        <div class="card-head"><h3>All variables</h3><span id="allinfo" class="muted"></span></div>
+        <div id="allchart" class="plot allchart"></div>
+      </div>
       <div id="charts" class="charts"></div>
     </div>
   </div>
  </div>
 
- <div id="step2" class="step" hidden>
-  <div class="card limits">
-    <div class="card-head"><h2>Límites (saturación)</h2>
-      <span class="muted">Cada muestra por encima del máximo queda en el máximo y cada una por debajo del mínimo queda en el mínimo. Campo vacío = sin límite.</span></div>
-    <div id="limitrows" class="limitrows"></div>
-    <button id="addlimit" class="button">+ Agregar límite</button>
-  </div>
-  <div id="bigcard" class="card bigcard">
-    <div class="card-head"><div id="pick" class="pick"></div><span id="biginfo" class="muted"></span></div>
-    <div id="big" class="plot bigplot"></div>
-    <div class="bigfoot">
-      <label class="check"><input type="checkbox" id="compare"> Comparar con original</label>
-      <span id="bigstats" class="muted"></span>
-      <button id="full" class="button">Pantalla completa</button>
+ <div id="step-analisis" class="step" hidden>
+  <div class="card pickbar"><span class="cfg-title">Variable</span><div id="pick" class="pick"></div></div>
+  <div class="analysis">
+    <aside class="card edit">
+      <h3>Editing</h3>
+      <details id="editlimits" open>
+        <summary>Limits <span id="limname" class="muted"></span></summary>
+        <p class="muted">Anything above the maximum is set to the maximum and anything below the minimum is set to the minimum; nothing is dropped. Empty = no limit.</p>
+        <label class="field">Maximum <input id="lmax" inputmode="decimal" placeholder="no limit"></label>
+        <label class="field">Minimum <input id="lmin" inputmode="decimal" placeholder="no limit"></label>
+        <span id="lmsg" class="msg"></span>
+        <label class="check"><input type="checkbox" id="compare"> Compare with original</label>
+        <span id="bigstats" class="muted"></span>
+      </details>
+    </aside>
+    <div id="bigcard" class="card bigcard">
+      <div class="card-head"><h3 id="bigtitle"></h3><span id="biginfo" class="muted"></span>
+        <span class="addcmp"><select id="cmpvar" hidden title="Comparison variable (right axis)"></select><button id="addcmp" class="button" title="Compare with another selected variable (right axis)">+</button></span>
+        <button id="full" class="button">Full screen</button></div>
+      <div id="big" class="plot bigplot"></div>
     </div>
   </div>
  </div>
 
- <div id="step3" class="step" hidden>
+ <div id="step-calor" class="step" hidden>
   <div class="card heatcfg">
     <div class="cfg-row">
-      <label class="field strong">Señal <select id="hvar"></select></label>
-      <div class="seg" id="hview" role="group" aria-label="Vista">
+      <label class="field strong">Signal <select id="hvar"></select></label>
+      <div class="seg" id="hview" role="group" aria-label="View">
         <button data-view="2d" class="on">2D</button><button data-view="3d">3D</button>
       </div>
       <span id="hnote" class="muted"></span>
     </div>
     <div class="cfg-row">
-      <span class="cfg-title">Escala</span>
-      <span class="group"><div class="seg" id="hspacing" role="group" aria-label="Divisiones"><button data-spacing="original" class="on">Original</button><button data-spacing="lineal">Lineal</button><button data-spacing="exponencial">Exponencial</button></div><button class="info" data-info="spacing" aria-label="Qué es original, lineal o exponencial">i</button></span>
-      <span class="group"><label class="field">Divisiones iniciales <input id="hbins" type="number" min="2" max="100" step="1" value="20"></label><button class="info" data-info="bins" aria-label="Qué son las divisiones iniciales">i</button></span>
-      <span class="group"><label class="field">% mínimo por división <input id="hmin" type="number" min="0" max="50" step="0.5" value="5"></label><button class="info" data-info="minpct" aria-label="Qué es el % mínimo por división">i</button></span>
+      <span class="cfg-title">Scale</span>
+      <span class="group"><div class="seg" id="hspacing" role="group" aria-label="Divisions"><button data-spacing="original" class="on">Original</button><button data-spacing="lineal">Linear</button><button data-spacing="exponencial">Exponential</button></div><button class="info" data-info="spacing" aria-label="What original, linear or exponential means">i</button></span>
+      <span class="group"><label class="field">Initial divisions <input id="hbins" type="number" min="2" max="100" step="1" value="20"></label><button class="info" data-info="bins" aria-label="What the initial divisions are">i</button></span>
+      <span class="group"><label class="field">Minimum % per division <input id="hmin" type="number" min="0" max="50" step="0.5" value="5"></label><button class="info" data-info="minpct" aria-label="What the minimum % per division is">i</button></span>
     </div>
     <div class="cfg-row" data-view="2d">
-      <span class="cfg-title">Nube</span>
-      <label class="field">Tamaño <input id="hsize" type="range" min="0.1" max="2" step="0.1" value="1"><output for="hsize"></output></label>
-      <label class="field">Opacidad <input id="hop" type="range" min="10" max="100" step="5" value="95"><output for="hop"></output></label>
-      <span class="group"><label class="field">Enfriamiento <input id="hcool" type="range" min="0" max="10" step="0.1" value="1"><output for="hcool"></output></label><button class="info" data-info="cool" aria-label="Qué es el enfriamiento">i</button></span>
-      <span class="group"><label class="field">Alcance <input id="hreach" type="range" min="1" max="50" step="1" value="30"><output for="hreach"></output></label><button class="info" data-info="reach" aria-label="Qué es el alcance">i</button></span>
+      <span class="cfg-title">Cloud</span>
+      <label class="field">Size <input id="hsize" type="range" min="0.1" max="2" step="0.1" value="1"><output for="hsize"></output></label>
+      <label class="field">Opacity <input id="hop" type="range" min="10" max="100" step="5" value="95"><output for="hop"></output></label>
+      <span class="group"><label class="field">Cooling <input id="hcool" type="range" min="0" max="10" step="0.1" value="1"><output for="hcool"></output></label><button class="info" data-info="cool" aria-label="What cooling is">i</button></span>
+      <span class="group"><label class="field">Reach <input id="hreach" type="range" min="1" max="50" step="1" value="30"><output for="hreach"></output></label><button class="info" data-info="reach" aria-label="What reach is">i</button></span>
     </div>
     <div class="cfg-row" data-view="3d" hidden>
-      <span class="cfg-title">Barras</span>
-      <label class="field">Altura máxima <input id="hheight" type="range" min="5" max="500" step="5" value="100"><output for="hheight"></output></label>
-      <label class="field">Ancho <input id="hwidth" type="range" min="0.5" max="20" step="0.5" value="2"><output for="hwidth"></output></label>
+      <span class="cfg-title">Bars</span>
+      <label class="field">Maximum height <input id="hheight" type="range" min="5" max="500" step="5" value="100"><output for="hheight"></output></label>
+      <label class="field">Width <input id="hwidth" type="range" min="0.5" max="20" step="0.5" value="2"><output for="hwidth"></output></label>
     </div>
     <div class="cfg-row">
-      <span class="cfg-title">Guardar</span>
-      <button id="hpng" class="button">Imagen PNG</button>
+      <span class="cfg-title">Save</span>
+      <button id="hpng" class="button">PNG image</button>
       <button id="hzip" class="button">GeoTIFF + QGIS (.zip)</button>
-      <button id="hkmz" class="button" title="Lo que se ve, para Google Earth: en 2D la nube, en 3D las barras; con la leyenda y la ruta">Google Earth (.kmz)</button>
+      <button id="hkmz" class="button" title="What you see, for Google Earth: the cloud in 2D, the bars in 3D; with the legend and the route">Google Earth (.kmz)</button>
     </div>
   </div>
   <div class="heatgrid">
@@ -147,28 +165,28 @@
       <div id="hlegend" class="hlegend"></div>
     </div>
     <div class="card heattable">
-      <h3>Escala de colores</h3>
+      <h3>Color scale</h3>
       <div id="hrange" class="hrange"></div>
-      <table><thead><tr><th></th><th>Rango</th><th>Muestras</th><th>%</th></tr></thead><tbody id="htable"></tbody></table>
+      <table><thead><tr><th></th><th>Range</th><th>Samples</th><th>%</th></tr></thead><tbody id="htable"></tbody></table>
     </div>
   </div>
  </div>
 
- <div id="step4" class="step" hidden>
+ <div id="step-terreno" class="step" hidden>
   <div class="card heatcfg">
     <div class="cfg-row">
-      <label class="field strong">Señal <select id="tvar"></select></label>
-      <span class="muted">Escala y colores del paso 3, sobre el relieve real. Clic derecho o Ctrl + arrastrar gira e inclina la vista.</span>
+      <label class="field strong">Signal <select id="tvar"></select></label>
+      <span class="muted">Scale and colors from step 3, over the real terrain. Right-click or Ctrl + drag rotates and tilts the view.</span>
     </div>
     <div class="cfg-row">
-      <span class="cfg-title">Altura</span>
-      <div class="seg" id="tmode"><button data-mode="measured" class="on">Medida</button><button data-mode="ground">Pegada al terreno</button></div>
-      <span class="group"><label class="field">Desfase <input id="toffset" type="number" step="0.1" value="0" inputmode="decimal" title="Cualquier valor, en metros"> m <input id="toffsetr" type="range" min="-5" max="5" step="0.1" value="0" aria-label="Ajuste fino del desfase" title="Ajuste fino: ±5 m alrededor del número"></label><button class="info" data-info="offset" aria-label="Qué es el desfase de altura">i</button></span>
+      <span class="cfg-title">Altitude</span>
+      <div class="seg" id="tmode"><button data-mode="measured" class="on">Measured</button><button data-mode="ground">On the ground</button></div>
+      <span class="group"><label class="field">Offset <input id="toffset" type="number" step="0.1" value="0" inputmode="decimal" title="Any value, in meters"> m <input id="toffsetr" type="range" min="-5" max="5" step="0.1" value="0" aria-label="Fine offset adjustment" title="Fine adjustment: ±5 m around the number"></label><button class="info" data-info="offset" aria-label="What the altitude offset is">i</button></span>
     </div>
     <div class="cfg-row">
-      <span class="cfg-title">Guardar</span>
-      <button id="tkmz" class="button" title="Las muestras a su altura (con el modo y el desfase elegidos), la leyenda y la ruta para Google Earth">Google Earth (.kmz)</button>
-      <span class="muted">Google Earth usa su propio relieve y mide la altura sobre el nivel del mar con otro modelo: si los puntos quedan enterrados o flotando, corrígelo con el desfase.</span>
+      <span class="cfg-title">Save</span>
+      <button id="tkmz" class="button" title="The samples at their altitude (with the chosen mode and offset), the legend and the route for Google Earth">Google Earth (.kmz)</button>
+      <span class="muted">Google Earth uses its own terrain and measures altitude above sea level with another model: if the points end up buried or floating, fix it with the offset.</span>
     </div>
     <div id="tnote" class="tnote" hidden></div>
   </div>
@@ -178,42 +196,42 @@
       <div id="tlegend" class="hlegend"></div>
     </div>
     <div class="card heattable">
-      <h3>Escala de colores</h3>
+      <h3>Color scale</h3>
       <div id="trange" class="hrange"></div>
-      <table><thead><tr><th></th><th>Rango</th><th>Muestras</th><th>%</th></tr></thead><tbody id="ttable"></tbody></table>
+      <table><thead><tr><th></th><th>Range</th><th>Samples</th><th>%</th></tr></thead><tbody id="ttable"></tbody></table>
     </div>
   </div>
  </div>
 
- <div id="step5" class="step" hidden>
+ <div id="step-excel" class="step" hidden>
   <div class="card heatcfg">
     <div class="cfg-row">
-      <span class="cfg-title">Tramo</span>
-      <div class="seg" id="xrange"><button data-range="all">Todo el archivo</button><button data-range="tramo">Tramo elegido</button><button data-range="visible">Parte visible (paso 1)</button></div>
+      <span class="cfg-title">Segment</span>
+      <div class="seg" id="xrange"><button data-range="all">Whole file</button><button data-range="tramo">Chosen segment</button><button data-range="visible">Visible part (step 1)</button></div>
       <span id="xnote" class="muted"></span>
     </div>
     <div class="cfg-row">
-      <span class="cfg-title">Contenido</span>
+      <span class="cfg-title">Contents</span>
       <span id="xwhat"></span>
     </div>
     <div class="cfg-row">
-      <span class="cfg-title">Límites</span>
-      <label class="check"><input type="checkbox" id="xlimits"> Aplicar los límites del paso 2</label>
+      <span class="cfg-title">Limits</span>
+      <label class="check"><input type="checkbox" id="xlimits"> Apply the limits from step 2</label>
       <span id="xlimnote" class="muted"></span>
     </div>
     <div class="cfg-row">
-      <button id="excel" class="button primary">Descargar Excel</button>
+      <button id="excel" class="button primary">Download Excel</button>
       <span id="xfile" class="muted"></span>
     </div>
   </div>
   <div class="card xlbook">
-    <div id="xlsheet" class="xlsheet"><div class="empty-note">Preparando la vista previa…</div></div>
+    <div id="xlsheet" class="xlsheet"><div class="empty-note">Preparing the preview…</div></div>
     <div id="xltabs" class="xltabs" role="tablist"></div>
   </div>
  </div>
 </section>
 
-<div id="infopop" class="infopop" role="dialog" hidden><button class="close" aria-label="Cerrar">✕</button><b></b><p></p></div>
+<div id="infopop" class="infopop" role="dialog" hidden><button class="close" aria-label="Close">✕</button><b></b><p></p></div>
 <div id="toast" class="toast" hidden></div>
 <script src="app.js"></script>
 </body>

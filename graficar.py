@@ -85,37 +85,41 @@ def gps_valid(lat, lon):
     return lat.between(-90, 90) & lon.between(-180, 180) & ~((lat == 0) & (lon == 0))
 
 
+# Hoja de datos de los libros que exporta GasLab: 'Data' desde que la 2.0 está en inglés, 'Datos' en los anteriores.
+DATA_SHEETS = ('Data', 'Datos')
+
+
 def read_excel(path, sheet=None):
-    """Hoja `sheet` de un libro Excel; por defecto 'Datos' (la que exporta GasLab) o la más grande.
+    """Hoja `sheet` de un libro Excel; por defecto 'Data' o 'Datos' (la que exporta GasLab) o la más grande.
     Devuelve (tabla, hoja usada, hojas con datos)."""
     name = Path(path).name
     if Path(path).suffix.lower() == '.xls':
-        raise ValueError(f'{name} es un Excel antiguo (.xls): ábrelo en Excel y guárdalo como .xlsx o .csv.')
+        raise ValueError(f'{name} is an old Excel file (.xls): open it in Excel and save it as .xlsx or .csv.')
     try:
         sheets = pd.read_excel(path, sheet_name=None)
     except ImportError as exc:
-        raise ValueError('Para abrir Excel instala las dependencias: pip install -r requirements.txt') from exc
+        raise ValueError('To open Excel files install the dependencies: pip install -r requirements.txt') from exc
     except Exception as exc:  # zip dañado, libro protegido con contraseña...
-        raise ValueError(f'No se pudo leer {name} como Excel: {exc}') from exc
+        raise ValueError(f'Could not read {name} as Excel: {exc}') from exc
     sheets = {title: table.dropna(how='all').dropna(axis=1, how='all') for title, table in sheets.items()}
     sheets = {title: table for title, table in sheets.items() if not table.empty}
     if not sheets:
-        raise ValueError(f'{name} no tiene datos en ninguna hoja.')
+        raise ValueError(f'{name} has no data in any sheet.')
     if sheet is None:
-        sheet = 'Datos' if 'Datos' in sheets else max(sheets, key=lambda title: sheets[title].size)
+        sheet = next((s for s in DATA_SHEETS if s in sheets), None) or max(sheets, key=lambda title: sheets[title].size)
     elif sheet not in sheets:
-        raise ValueError(f'{name} no tiene datos en la hoja «{sheet}».')
+        raise ValueError(f'{name} has no data in the sheet “{sheet}”.')
     frame = sheets[sheet]
     frame.columns = [str(c) for c in frame.columns]
     # Libro exportado por GasLab (make_excel): la fecha está en hora local de la zona del encabezado; se pasa a UTC.
-    local = next((c for c in frame if re.fullmatch(r'Fecha y hora \(.+\)', c)), None)
+    local = next((c for c in frame if re.fullmatch(r'(Date and time|Fecha y hora) \(.+\)', c)), None)
     if local and 'fecha_hora_utc' not in frame:
-        zone = local[len('Fecha y hora ('):-1]
+        zone = local[local.index('(') + 1:-1]
         try:
             dates = pd.to_datetime(frame[local], errors='coerce').dt.tz_localize(ZoneInfo(zone), ambiguous='NaT', nonexistent='NaT')
         except (KeyError, ValueError, TypeError):
             return frame, sheet, list(sheets)
-        frame = frame.drop(columns=[local, 'Transcurrido (s)'], errors='ignore')
+        frame = frame.drop(columns=[local, 'Elapsed (s)', 'Transcurrido (s)'], errors='ignore')
         frame.insert(0, 'fecha_hora_utc', dates.dt.tz_convert('UTC'))
     return frame, sheet, list(sheets)
 
@@ -124,7 +128,7 @@ def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
     """CSV, .dat TOA5 de Campbell (o Excel .xlsx/.xlsm) con columnas normalizadas y filas en orden cronológico. En un Excel,
     frame.attrs dice la hoja usada ('sheet') y las que tienen datos ('sheets')."""
     if Path(path).stat().st_size == 0:
-        raise ValueError(f'El archivo {Path(path).name} está vacío (0 bytes): no tiene encabezado ni datos.')
+        raise ValueError(f'The file {Path(path).name} is empty (0 bytes): it has no header or data.')
     if Path(path).suffix.lower() in EXCEL_SUFFIXES:
         table, used, names = read_excel(path, sheet)
         frame = _prepare(table, only_new, time_column, unit)
@@ -138,7 +142,7 @@ def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
         # promedio. Se dejan solo los nombres y los datos. Los valores faltantes vienen como "NAN".
         lines = raw.decode('utf-8-sig', errors='replace').splitlines()
         if len(lines) < 2:
-            raise ValueError(f'El archivo {Path(path).name} es TOA5 (Campbell) pero no tiene encabezado de columnas.')
+            raise ValueError(f'The file {Path(path).name} is TOA5 (Campbell) but has no column header.')
         raw = '\n'.join([lines[1]] + lines[4:]).encode()
         source = io.BytesIO(raw)
     if b'\x00' in raw:
@@ -147,7 +151,7 @@ def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
         lines = raw.replace(b'\x00', b'').decode('utf-8-sig', errors='replace').splitlines()
         lines = [line for line in lines if line.strip()]
         if not lines:
-            raise ValueError(f'El archivo {Path(path).name} solo contiene bytes nulos: no hay datos.')
+            raise ValueError(f'The file {Path(path).name} only contains null bytes: there is no data.')
         sep = max((',', ';', '\t'), key=lines[0].count)
         width = lines[0].count(sep)
         good = [lines[0]] + [line for line in lines[1:] if line.count(sep) == width]
@@ -156,19 +160,19 @@ def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
         frame = pd.read_csv(source, sep=None, engine='python', encoding='utf-8-sig',
                             na_values=['NAN', 'INF', '-INF'] if toa5 else None)
     except (pd.errors.EmptyDataError, pd.errors.ParserError, csv.Error) as exc:
-        raise ValueError(f'No se pudo leer {Path(path).name} como CSV: {exc}') from exc
+        raise ValueError(f'Could not read {Path(path).name} as CSV: {exc}') from exc
     return _prepare(frame, only_new, time_column, unit)
 
 
 def _prepare(frame, only_new, time_column, unit):
     frame.columns = frame.columns.str.strip()
     if frame.columns.duplicated().any():
-        raise ValueError('El CSV tiene nombres de columnas repetidos.')
+        raise ValueError('The CSV has repeated column names.')
     frame = normalize_columns(frame)
     if only_new and 'sen66_new_data' in frame:
         frame = frame[numeric(frame['sen66_new_data']) == 1]
     if frame.empty:
-        raise ValueError('No hay muestras para graficar con este filtro.')
+        raise ValueError('There are no samples to plot with this filter.')
     frame = frame.reset_index(drop=True)
     time_column = find_time_column(frame, time_column) if time_column else None
     if time_column:
@@ -198,7 +202,7 @@ def parse_time(frame, column, unit='auto'):
     else:
         dates = pd.to_datetime(raw, format='mixed', utc=True, errors='coerce')
     if not dates.notna().any():
-        raise ValueError(f'No se pudieron leer fechas de {column}. Usa ISO 8601 o Unix s/ms/us/ns.')
+        raise ValueError(f'Could not read dates from {column}. Use ISO 8601 or Unix s/ms/us/ns.')
     return dates
 
 
@@ -373,9 +377,9 @@ def default_variables(variables, columns=None):
 
 
 def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=DEFAULT_ZONE, unit='auto', title='MicroGas',
-               gps=None, also=(), route_name='Ruta GPS'):
-    """Libro Excel con lo que llega en `frame` (el visor pasa solo el tramo elegido): hojas Resumen, Datos,
-    Gráficas (un gráfico nativo de Excel por variable) y Ruta (latitud/longitud, si hay GPS).
+               gps=None, also=(), route_name='GPS route'):
+    """Libro Excel con lo que llega en `frame` (el visor pasa solo el tramo elegido): hojas Summary, Data,
+    Charts (un gráfico nativo de Excel por variable) y Route (latitud/longitud, si hay GPS). En inglés, como la 2.0.
     gps: (latitud, longitud) para la hoja Ruta si no son las de nombre conocido (p. ej. las del dron);
     also: otras columnas que van en Datos sin gráfica ni resumen."""
     import datetime
@@ -383,9 +387,9 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
         import xlsxwriter
         from xlsxwriter.utility import xl_range_abs
     except ImportError as exc:
-        raise ValueError('Para exportar a Excel instala las dependencias: pip install -r requirements.txt') from exc
+        raise ValueError('To export to Excel install the dependencies: pip install -r requirements.txt') from exc
     if frame.empty:
-        raise ValueError('No hay muestras para exportar.')
+        raise ValueError('There are no samples to export.')
     variables = numeric_columns(frame)
     chosen = default_variables(variables, columns)
     lat_col, lon_col = gps or (next((c for c in LAT_COLUMNS if c in frame), None), next((c for c in LON_COLUMNS if c in frame), None))
@@ -405,15 +409,15 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
     head = book.add_format({'bold': True, 'bg_color': '#dfeeee', 'border': 1, 'text_wrap': True, 'valign': 'top'})
     when = book.add_format({'num_format': date_format})
     number = book.add_format({'num_format': '0.000'})
-    summary, sheet, plots = book.add_worksheet('Resumen'), book.add_worksheet('Datos'), book.add_worksheet('Gráficas')
+    summary, sheet, plots = book.add_worksheet('Summary'), book.add_worksheet('Data'), book.add_worksheet('Charts')
 
     # Datos: tiempo + variables elegidas + GPS/altitud
     headers, series = [], []
     if local is not None:
-        headers += [f'Fecha y hora ({zone})', 'Transcurrido (s)']
+        headers += [f'Date and time ({zone})', 'Elapsed (s)']
         series += [list(local), list(elapsed)]
     else:
-        headers.append('Muestra')
+        headers.append('Sample')
         series.append(list(range(1, len(frame) + 1)))
     data_cols = chosen + extra
     headers += data_cols
@@ -434,16 +438,16 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
     sheet.freeze_panes(1, 1)
     sheet.autofilter(0, 0, n, len(headers) - 1)
     column_of = {name: headers.index(name) for name in data_cols}
-    x_ref = ['Datos', 1, 0, n, 0]
+    x_ref = ['Data', 1, 0, n, 0]
 
     # Resumen
     summary.write(0, 0, title, book.add_format({'bold': True, 'font_size': 14}))
-    info = [('Muestras', n)]
+    info = [('Samples', n)]
     if local is not None and local.notna().any():
         first, last = local.dropna().iloc[0], local.dropna().iloc[-1]
         secs = int((last - first).total_seconds())
-        info = [('Desde', first.to_pydatetime()), ('Hasta', last.to_pydatetime()),
-                ('Duración', f'{secs // 3600} h {secs % 3600 // 60:02d} min {secs % 60:02d} s'), ('Zona horaria', zone)] + info
+        info = [('From', first.to_pydatetime()), ('To', last.to_pydatetime()),
+                ('Duration', f'{secs // 3600} h {secs % 3600 // 60:02d} min {secs % 60:02d} s'), ('Time zone', zone)] + info
     for row, (label, value) in enumerate(info, 2):
         summary.write(row, 0, label, bold)
         if isinstance(value, datetime.datetime):
@@ -451,10 +455,10 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
         else:
             summary.write(row, 1, value)
     top = len(info) + 3
-    summary.write_row(top, 0, ['Variable', 'Mínimo', 'Promedio', 'Máximo', 'Muestras válidas'], head)
+    summary.write_row(top, 0, ['Variable', 'Minimum', 'Mean', 'Maximum', 'Valid samples'], head)
     for row, name in enumerate(chosen, top + 1):
         values = numeric(frame[name]).dropna()
-        ref = 'Datos!' + xl_range_abs(1, column_of[name], n, column_of[name])
+        ref = 'Data!' + xl_range_abs(1, column_of[name], n, column_of[name])
         summary.write(row, 0, name)
         if len(values):
             for col, (func, cached) in enumerate((('MIN', values.min()), ('AVERAGE', values.mean()), ('MAX', values.max())), 1):
@@ -469,9 +473,9 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
     for k, name in enumerate(chosen):
         chart = book.add_chart({'type': 'scatter', 'subtype': 'straight'})
         col = column_of[name]
-        chart.add_series({'name': name, 'categories': x_ref, 'values': ['Datos', 1, col, n, col],
+        chart.add_series({'name': name, 'categories': x_ref, 'values': ['Data', 1, col, n, col],
                           'line': {'color': PALETTE[variables.index(name) % len(PALETTE)], 'width': 1.25}})
-        x_axis = {'name': 'Fecha y hora' if local is not None else 'Muestra', 'major_gridlines': {'visible': True, 'line': {'color': '#e3e3e3'}}}
+        x_axis = {'name': 'Date and time' if local is not None else 'Sample', 'major_gridlines': {'visible': True, 'line': {'color': '#e3e3e3'}}}
         if local is not None:
             x_axis['num_format'] = 'dd/mm hh:mm' if multi_day else 'hh:mm:ss'
             valid = local.dropna()
@@ -487,17 +491,17 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
 
     # Ruta: longitud (X) contra latitud (Y); Excel no tiene fondo de mapa
     if lat_col and lon_col and numeric(frame[lat_col]).between(-90, 90).any():
-        route = book.add_worksheet('Ruta')
+        route = book.add_worksheet('Route')
         column_of.update({c: headers.index(c) for c in (lat_col, lon_col)})
         chart = book.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-        chart.add_series({'name': route_name, 'categories': ['Datos', 1, column_of[lon_col], n, column_of[lon_col]],
-                          'values': ['Datos', 1, column_of[lat_col], n, column_of[lat_col]],
+        chart.add_series({'name': route_name, 'categories': ['Data', 1, column_of[lon_col], n, column_of[lon_col]],
+                          'values': ['Data', 1, column_of[lat_col], n, column_of[lat_col]],
                           'line': {'color': '#007f86', 'width': 1.5}, 'marker': {'type': 'circle', 'size': 3, 'fill': {'color': '#007f86'}, 'border': {'none': True}}})
         lat, lon = numeric(frame[lat_col]).dropna(), numeric(frame[lon_col]).dropna()
         pad_lat, pad_lon = max((lat.max() - lat.min()) * 0.05, 1e-5), max((lon.max() - lon.min()) * 0.05, 1e-5)
-        chart.set_title({'name': f'{route_name} (sin fondo de mapa)'})
-        chart.set_x_axis({'name': 'Longitud', 'min': lon.min() - pad_lon, 'max': lon.max() + pad_lon, 'num_format': '0.0000'})
-        chart.set_y_axis({'name': 'Latitud', 'min': lat.min() - pad_lat, 'max': lat.max() + pad_lat, 'num_format': '0.0000'})
+        chart.set_title({'name': f'{route_name} (no map background)'})
+        chart.set_x_axis({'name': 'Longitude', 'min': lon.min() - pad_lon, 'max': lon.max() + pad_lon, 'num_format': '0.0000'})
+        chart.set_y_axis({'name': 'Latitude', 'min': lat.min() - pad_lat, 'max': lat.max() + pad_lat, 'num_format': '0.0000'})
         chart.set_legend({'none': True})
         chart.set_size({'width': 800, 'height': 800})
         route.insert_chart(0, 0, chart, {'x_offset': 10, 'y_offset': 10})

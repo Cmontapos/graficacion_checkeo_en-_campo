@@ -65,6 +65,37 @@ body.dragging .drop, body.dragging .vars { border-color: var(--accent); backgrou
 /* El mapa toma el alto que deja la gráfica de altura, para que la columna izquierda (fija) quepa en pantalla. */
 .map { height: calc(100vh - 430px); min-height: 260px; }
 .chart { height: 230px; }
+/* Paso 1: «Todas | variable…» y «Normalizada | Valores reales» sobre la gráfica combinada. */
+.right-tools { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin: 0 2px 10px; }
+#solo { flex-wrap: wrap; max-width: 100%; }
+#solo button i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+#allcard { margin-bottom: 12px; }
+.allchart { height: 320px; }
+/* Una sola variable elegida: su gráfica ocupa el alto de la pantalla. */
+/* «Elegir recorrido»: el botón queda encendido y el puntero de las gráficas es una cruz. */
+#pickrec.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.picking .plot .nsewdrag { cursor: crosshair !important; }
+.card.solo .chart { height: calc(100vh - 260px); min-height: 340px; }
+/* Paso 2, Análisis: variables arriba, panel «Edición» a la izquierda y la gráfica grande a la derecha. */
+.pickbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.analysis { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 12px; align-items: start; }
+.edit h3 { margin: 0 0 8px; }
+.edit details { border-top: 1px solid var(--line); padding-top: 8px; }
+.edit summary { font-weight: 700; cursor: pointer; margin-bottom: 8px; }
+.edit details[open] { display: flex; flex-direction: column; gap: 10px; }
+.edit p { margin: 0; font-size: 12.5px; }
+.edit .field { justify-content: space-between; }
+.edit .field input { width: 130px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.edit .field input.bad { border-color: var(--error); }
+.edit .msg { color: var(--error); font-size: 12.5px; }
+.edit .msg:empty { display: none; }
+#bigcard .card-head { gap: 10px; }
+#bigtitle { margin: 0; }
+#biginfo { flex: 1; }
+.addcmp { display: inline-flex; align-items: center; gap: 6px; }
+.addcmp select { padding: 5px 8px; border: 2px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; max-width: 220px; }
+#addcmp { font-size: 18px; line-height: 1; padding: 4px 11px; font-weight: 700; }
+@media (max-width: 900px) { .analysis { grid-template-columns: minmax(0, 1fr); } }
 .empty-note { padding: 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 10px; }
 
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); max-width: min(640px, calc(100vw - 32px)); padding: 10px 14px; border-radius: 8px; background: var(--text); color: var(--bg); box-shadow: 0 4px 16px rgba(0,0,0,.2); z-index: 10; }
@@ -91,6 +122,7 @@ body.dragging .drop, body.dragging .vars { border-color: var(--accent); backgrou
 .limit-row .msg { color: var(--error); font-size: 12.5px; }
 
 .pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.pick .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .pick .button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .bigplot { height: calc(100vh - 400px); min-height: 340px; }
 .bigfoot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 6px; }

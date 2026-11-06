@@ -56,6 +56,9 @@ class GasLabWebTests(unittest.TestCase):
         self.assertEqual(co2['y'], [402, 405, 410, None, 450])
         self.assertEqual(co2['original'], [400, 405, 410, None, 500])
         self.assertEqual((co2['below'], co2['above'], co2['valid']), (1, 1, 4))
+        # Con un tramo, las muestras ajustadas se cuentan solo dentro de él (filas 1 a 2: 405 y 410).
+        part = dataset.series(['co2_ppm'], 'UTC', limits=limits, window=(1, 3))['co2_ppm']
+        self.assertEqual((part['below'], part['above'], part['valid']), (0, 0, 2))
         self.assertNotIn('limits', series['SO2_ppm'])
         self.assertEqual(w.parse_limits('{"co2_ppm": [300, null]}'), {'co2_ppm': (300.0, None)})
         with self.assertRaises(ValueError):
@@ -143,7 +146,7 @@ class GasLabWebTests(unittest.TestCase):
         self.assertGreater(np.asarray(png)[..., 3].max(), 200)  # la muestra en (-84, 10) se ve saturada
         name, body = dataset.heat_zip('co2_ppm', {}, size_m=1)
         names = zipfile.ZipFile(io.BytesIO(body)).namelist()
-        self.assertEqual(sorted(n.rsplit('_', 1)[-1] for n in names), ['nube.tif', 'ppm.qgz', 'puntos.geojson', 'valores.tif'])
+        self.assertEqual(sorted(n.rsplit('_', 1)[-1] for n in names), ['cloud.tif', 'points.geojson', 'ppm.qgz', 'values.tif'])
 
     def test_terrain_elevation_interpolates_and_marks_voids(self):
         # Teselas simuladas (sin internet): la altura crece 1 m por pixel hacia el este; la tesela de al lado está vacía.
@@ -254,17 +257,17 @@ class GasLabWebTests(unittest.TestCase):
         _, dataset = w.load(CSV, 'prueba.csv')
         name, body = dataset.excel(['co2_ppm', 'SO2_ppm'], 'UTC')
         book = openpyxl.load_workbook(io.BytesIO(body))
-        self.assertEqual((name, book.sheetnames), ('prueba.xlsx', ['Resumen', 'Datos', 'Gráficas', 'Ruta']))
-        self.assertEqual([c.value for c in book['Datos'][1]], ['Fecha y hora (UTC)', 'Transcurrido (s)', 'co2_ppm', 'SO2_ppm', 'latitud', 'longitud', 'altitud_m'])
-        self.assertEqual([r[2].value for r in book['Datos'].iter_rows(min_row=2)], [400, 405, 410, 500])  # en orden de tiempo
+        self.assertEqual((name, book.sheetnames), ('prueba.xlsx', ['Summary', 'Data', 'Charts', 'Route']))
+        self.assertEqual([c.value for c in book['Data'][1]], ['Date and time (UTC)', 'Elapsed (s)', 'co2_ppm', 'SO2_ppm', 'latitud', 'longitud', 'altitud_m'])
+        self.assertEqual([r[2].value for r in book['Data'].iter_rows(min_row=2)], [400, 405, 410, 500])  # en orden de tiempo
         preview = dataset.excel_preview(['co2_ppm', 'SO2_ppm'], 'UTC')
-        self.assertEqual(preview['headers'], [c.value for c in book['Datos'][1]])
+        self.assertEqual(preview['headers'], [c.value for c in book['Data'][1]])
         self.assertEqual(preview['stats'][0], {'name': 'co2_ppm', 'min': 400, 'mean': 428.75, 'max': 500, 'count': 4})
         self.assertEqual(preview['first'][0][:3], ['16/09/2026 12:00:00', 0.0, 400])
         # Solo el tramo visible: de 12:00:00 a 12:00:01 (ms 'de reloj' de la zona).
         t, _ = dataset.local_ms('UTC')
         name, body = dataset.excel(['co2_ppm'], 'UTC', t[1], t[2])
-        self.assertEqual((name, openpyxl.load_workbook(io.BytesIO(body))['Datos'].max_row), ('prueba_20260916_1200.xlsx', 3))
+        self.assertEqual((name, openpyxl.load_workbook(io.BytesIO(body))['Data'].max_row), ('prueba_20260916_1200.xlsx', 3))
         with self.assertRaises(ValueError):
             dataset.excel([], 'UTC')
 
@@ -274,8 +277,8 @@ class GasLabWebTests(unittest.TestCase):
         limits = {'co2_ppm': (402.0, 408.0)}
         _, body = dataset.excel(['co2_ppm', 'SO2_ppm'], 'UTC', limits=limits)
         book = openpyxl.load_workbook(io.BytesIO(body))
-        self.assertEqual([r[2].value for r in book['Datos'].iter_rows(min_row=2)], [402, 405, 408, 408])
-        self.assertIn('límites: co2_ppm mín 402 y máx 408', book['Resumen']['A1'].value)
+        self.assertEqual([r[2].value for r in book['Data'].iter_rows(min_row=2)], [402, 405, 408, 408])
+        self.assertIn('limits: co2_ppm min 402 and max 408', book['Summary']['A1'].value)
         preview = dataset.excel_preview(['co2_ppm'], 'UTC', limits=limits)
         self.assertEqual((preview['stats'][0]['min'], preview['stats'][0]['max']), (402, 408))
         self.assertLessEqual(max(v for v in preview['charts']['co2_ppm']['y'] if v is not None), 408)
@@ -305,7 +308,7 @@ class GasLabWebTests(unittest.TestCase):
         name, body = dataset.kmz('route')
         kml = read(body).read('doc.kml').decode()
         minidom.parseString(kml)
-        self.assertEqual(name, 'prueba_ruta.kmz')
+        self.assertEqual(name, 'prueba_route.kmz')
         self.assertNotIn('<LineString>', kml)  # aquí no hay dos puntos seguidos con GPS: solo Inicio y Fin
         self.assertIn('2026-09-16T12:00:00Z', kml)  # Inicio con su hora
         _, line = w.load(b'timestamp,co2_ppm,latitud,longitud\n2026-09-16T12:00:00Z,1,10,-84\n2026-09-16T12:00:01Z,2,10.0001,-84\n', 'linea.csv')
@@ -314,7 +317,7 @@ class GasLabWebTests(unittest.TestCase):
         archive = read(body)
         kml = archive.read('doc.kml').decode()
         minidom.parseString(kml)
-        self.assertEqual(sorted(archive.namelist()), ['doc.kml', 'files/nube.png'])
+        self.assertEqual(sorted(archive.namelist()), ['doc.kml', 'files/cloud.png'])
         self.assertIn('<GroundOverlay>', kml)
         self.assertNotIn('<ScreenOverlay>', kml)  # Google Earth en el navegador la rechaza
         self.assertNotIn('<TimeStamp>', kml)  # también
@@ -323,7 +326,7 @@ class GasLabWebTests(unittest.TestCase):
         self.assertNotIn('<Polygon>', kml)  # en 2D solo la nube (con la leyenda y la ruta)
         name, body = dataset.kmz('bars', 'co2_ppm', {})
         bars = read(body).read('doc.kml').decode()
-        self.assertEqual((name, bars.count('<Polygon>'), '<GroundOverlay>' in bars), ('prueba_co2_ppm_barras3d.kmz', 3, False))  # 3D: las barras
+        self.assertEqual((name, bars.count('<Polygon>'), '<GroundOverlay>' in bars), ('prueba_co2_ppm_bars3d.kmz', 3, False))  # 3D: las barras
         north = float(kml.split('<north>')[1].split('<')[0])
         self.assertAlmostEqual(north, 10.1 + 31.5 / 111320, delta=0.0002)  # la nube llega ~30 m (+ medio tamaño) más allá
         _, body = dataset.kmz('terrain', 'co2_ppm', {}, offset=-10)

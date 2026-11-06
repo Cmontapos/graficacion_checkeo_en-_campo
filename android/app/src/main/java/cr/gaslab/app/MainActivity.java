@@ -58,7 +58,7 @@ import java.util.regex.Pattern;
 public class MainActivity extends Activity {
     private static final int PICK_FILE = 1;
     private static final String LOADING = "<html><body style=\"margin:0;height:100vh;display:flex;align-items:center;"
-            + "justify-content:center;font:16px system-ui,sans-serif;color:#888;background:transparent\">Iniciando GasLab…</body></html>";
+            + "justify-content:center;font:16px system-ui,sans-serif;color:#888;background:transparent\">Starting GasLab…</body></html>";
     private static final Pattern FILENAME = Pattern.compile("filename\\*=UTF-8''([^;]+)");
 
     private final ExecutorService io = Executors.newCachedThreadPool();
@@ -121,7 +121,7 @@ public class MainActivity extends Activity {
                     .callAttr("start", webDir.getPath(), getCacheDir().getPath()).toInt();
             main.post(() -> web.loadUrl("http://127.0.0.1:" + port + "/"));
         } catch (Exception e) {
-            String html = "<pre style=\"white-space:pre-wrap;font:13px monospace;padding:16px\">No se pudo iniciar GasLab:\n\n"
+            String html = "<pre style=\"white-space:pre-wrap;font:13px monospace;padding:16px\">Could not start GasLab:\n\n"
                     + android.text.TextUtils.htmlEncode(String.valueOf(e)) + "</pre>";
             main.post(() -> web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null));
         }
@@ -144,7 +144,7 @@ public class MainActivity extends Activity {
     private static void copyAssets(AssetManager assets, String path, File target) throws IOException {
         String[] children = assets.list(path);
         if (children != null && children.length > 0) {
-            if (!target.isDirectory() && !target.mkdirs()) throw new IOException("No se pudo crear " + target);
+            if (!target.isDirectory() && !target.mkdirs()) throw new IOException("Could not create " + target);
             for (String child : children) copyAssets(assets, path + "/" + child, new File(target, child));
             return;
         }
@@ -182,9 +182,9 @@ public class MainActivity extends Activity {
         values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
         values.put(MediaStore.Downloads.IS_PENDING, 1);
         Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-        if (uri == null) throw new IOException("Android no permitió crear el archivo");
+        if (uri == null) throw new IOException("Android did not allow creating the file");
         try (OutputStream out = resolver.openOutputStream(uri)) {
-            if (out == null) throw new IOException("Android no permitió escribir el archivo");
+            if (out == null) throw new IOException("Android did not allow writing the file");
             copy(in, out);
         } catch (IOException e) {
             resolver.delete(uri, null, null);
@@ -210,7 +210,7 @@ public class MainActivity extends Activity {
                 String error = null, name = fallback;
                 try {
                     URL target = new URL(url);
-                    if (!"127.0.0.1".equals(target.getHost())) throw new IOException("dirección no permitida");
+                    if (!"127.0.0.1".equals(target.getHost())) throw new IOException("address not allowed");
                     HttpURLConnection connection = (HttpURLConnection) target.openConnection();
                     connection.setConnectTimeout(10000);
                     connection.setReadTimeout(0);  // un GeoTIFF grande puede tardar en prepararse
@@ -231,7 +231,7 @@ public class MainActivity extends Activity {
                     }
                     connection.disconnect();
                 } catch (Exception e) {
-                    error = "No se pudo guardar: " + e.getMessage();
+                    error = "Could not save: " + e.getMessage();
                 }
                 String js = "gaslabSaved(" + JSONObject.quote(id) + "," + (error == null ? "null" : JSONObject.quote(error))
                         + "," + JSONObject.quote(name) + ")";
@@ -246,7 +246,7 @@ public class MainActivity extends Activity {
                 saveToDownloads(name, cleanMime(mime), new ByteArrayInputStream(Base64.decode(base64, Base64.DEFAULT)));
                 return "";
             } catch (Exception e) {
-                return "No se pudo guardar: " + e.getMessage();
+                return "Could not save: " + e.getMessage();
             }
         }
     }

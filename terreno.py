@@ -29,8 +29,8 @@ def _tile(z, x, y):
         try:
             data = urllib.request.urlopen(request, timeout=20).read()
         except OSError as exc:
-            raise ValueError('No se pudo descargar la altura del terreno (¿sin internet?). '
-                             'El terreno 3D necesita conexión la primera vez que se abre una zona.') from exc
+            raise ValueError('Could not download the terrain altitude (no internet?). '
+                             'The 3D terrain needs a connection the first time an area is opened.') from exc
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     from PIL import Image
@@ -49,7 +49,7 @@ def elevation(lon, lat, zoom=ZOOM):
     x0, y0 = np.floor(px).astype(int), np.floor(py).astype(int)
     tiles = {(int(tx), int(ty)) for tx, ty in zip(np.r_[x0, x0 + 1] // 256, np.r_[y0, y0 + 1] // 256)}
     if len(tiles) > MAX_TILES:
-        raise ValueError('La ruta es demasiado extensa para el terreno 3D.')
+        raise ValueError('The route is too large for the 3D terrain.')
     cache = {key: np.where(t < VOID, np.nan, t) for key, t in ((key, _tile(zoom, key[0] % n, key[1])) for key in tiles)}
 
     def at(x, y):
