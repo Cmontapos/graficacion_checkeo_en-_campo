@@ -28,7 +28,7 @@ h3 { font-size: 14px; }
 .brand span { color: var(--accent); }
 .fileinfo { flex: 1; min-width: 160px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zone { display: flex; align-items: center; gap: 8px; color: var(--muted); }
-.zone[hidden] { display: none; }
+[hidden] { display: none !important; } /* también sobre las reglas con display propio (.zone, .switch) */
 .zone input { width: 210px; }
 .zone select { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; max-width: 180px; }
 input[type=search], .zone input { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
@@ -97,6 +97,11 @@ body.dragging .drop, body.dragging .vars { border-color: var(--accent); backgrou
 .bigfoot #bigstats { flex: 1; }
 .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
 .check input { accent-color: var(--accent); margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { padding: 5px 10px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button:hover { color: var(--text); background: var(--chip); }
+.seg button.on { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 /* Pantalla completa (API del navegador, o la clase .full si no está disponible); Esc sale. */
 .bigcard:fullscreen, .bigcard.full { position: fixed; inset: 0; z-index: 20; border-radius: 0; padding: 16px; display: flex; flex-direction: column; background: var(--card); }
 .bigcard:fullscreen .bigplot, .bigcard.full .bigplot { flex: 1; height: auto; }
@@ -123,6 +128,9 @@ body.dragging .drop, body.dragging .vars { border-color: var(--accent); backgrou
 .seg button { padding: 6px 18px; border: none; background: var(--card); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--accent); color: #fff; }
+/* En la cabecera, más compactos para que quepan junto al archivo y la zona horaria. */
+.top .seg button { padding: 5px 10px; font-size: 13px; }
+.top { gap: 10px; }
 
 .tnote { padding: 8px 12px; border-radius: 8px; background: var(--chip); color: var(--text); font-size: 13px; }
 .tnote.warn { background: #fff4e0; color: #7a4b00; }
@@ -145,6 +153,37 @@ body.dragging .drop, body.dragging .vars { border-color: var(--accent); backgrou
 .heattable .pct b { position: relative; z-index: 1; font-weight: 400; }
 .maplibregl-popup-content { background: var(--card); color: var(--text); font: 12.5px/1.4 system-ui, sans-serif; padding: 6px 10px; }
 .maplibregl-popup-tip { display: none; }
+
+/* Tramos (paso 1): como la barra de la versión 1. */
+.tramobar { margin-bottom: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.tramobar .field select { min-width: 0; max-width: 420px; }
+.tramobar .sep { color: var(--line); font-size: 20px; }
+.tramobar #tramoinfo { flex-basis: 100%; }
+.tramobar #tramoinfo:empty { display: none; }
+.button:disabled { opacity: .5; cursor: default; }
+.button.small { padding: 3px 9px; font-size: 12.5px; }
+.card-head h3 { white-space: nowrap; }
+#routeinfo { flex: 1; }
+.themebtn { padding: 5px 10px; font-size: 15px; line-height: 1.2; }
+
+/* Paso 5: vista previa del libro Excel, con las hojas como pestañas abajo (como en Excel). */
+.xlbook { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.xlsheet { padding: 12px; min-height: 360px; max-height: calc(100vh - 330px); overflow: auto; }
+.xltabs { display: flex; gap: 2px; padding: 0 10px; border-top: 1px solid var(--line); background: var(--bg); overflow-x: auto; }
+.xltabs button { padding: 6px 16px; border: 1px solid transparent; border-top: none; border-radius: 0 0 6px 6px; background: none; color: var(--muted); font: inherit; cursor: pointer; white-space: nowrap; }
+.xltabs button.on { background: var(--card); border-color: var(--line); color: var(--accent); font-weight: 600; margin-top: -1px; }
+.xltable { border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12.5px; }
+.xltable th, .xltable td { border: 1px solid var(--line); padding: 3px 8px; text-align: right; white-space: nowrap; }
+.xltable th { position: sticky; top: -12px; background: var(--accent-soft); font-weight: 600; text-align: left; white-space: normal; vertical-align: top; min-width: 70px; }
+.xltable td:first-child { text-align: left; }
+.xltable .more td { text-align: center; color: var(--muted); font-style: italic; }
+.xltitle { font-size: 16px; font-weight: 700; margin: 0 0 10px; }
+.xlinfo { margin-bottom: 14px; }
+.xlinfo td { text-align: left; }
+.xlinfo td:first-child { font-weight: 600; }
+.xlcharts { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.xlchart { height: 230px; border: 1px solid var(--line); border-radius: 6px; }
+.xlroute { height: 460px; max-width: 520px; border: 1px solid var(--line); border-radius: 6px; }
 
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; }

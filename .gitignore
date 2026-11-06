@@ -5,3 +5,9 @@ dist/
 *.csv
 MicroGas_receptor_*.html
 .~lock.*#
+
+# Datos de campo y salidas generadas (no van al repo)
+*.dat
+CO2_georeferenciado/
+gps_dron/
+ruta_*.html

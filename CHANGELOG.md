@@ -1,5 +1,125 @@
 # Cambios
 
+## 2026-11-05 · App de Android (APK)
+- **Qué:** GasLab 2.0 como app de Android (`dist/GasLab.apk`, ~45 MB, Android 11+ ARM64). Es la misma interfaz y el mismo servidor de la PC: Python con Chaquopy y la página en un WebView. Abrir archivo usa el selector de Android, Guardar deja los archivos en Descargas, funciona la pantalla completa de las gráficas y Atrás deja la app en segundo plano sin perder el archivo.
+- **Dónde:** `android/` (proyecto Gradle: `app/build.gradle`, `MainActivity.java`, `gaslab_android.py`), `make android`. En `web/app.js`, `saveFrom()` y el PNG del mapa usan `window.GasLabAndroid` cuando existe (en un WebView no hay descargas de `blob:`); en la PC no cambia nada. `gaslab_web.py` sirve `web/vendor/plotly.min.js` si está (la APK lo trae ahí y no necesita el paquete plotly).
+- **Ojo:** la APK lleva numpy 1.26.2 y pandas 2.1.3 (las versiones de Chaquopy para Python 3.10), no las de la PC: `test_gaslab_web` pasa completo con esas versiones. El servidor se probó en la PC sin plotly, igual que en la APK. **No se ha probado en un dispositivo ni en un emulador** (la imagen del emulador está incompleta y no hay espacio en disco para bajarla).
+
+## 2026-11-05 · Escala «Original | Lineal | Exponencial»
+- **Qué:** el selector de divisiones del paso 3 tiene tres opciones. **Original** (por defecto) es la escala de antes, idéntica: divisiones del mismo ancho, y las que tienen menos del % mínimo de las muestras se unen a su vecina. Al elegirla, el % mínimo se pone en 5 %, como antes, y se puede cambiar. Al elegir **Lineal** o **Exponencial**, el % vuelve a 0 %; esas dos siguen igual.
+- **Dónde:** `mapa_calor.adaptive_classes(spacing='original')` usa la misma llamada `np.histogram(bins, range)` de antes y `ORIGINAL_MIN_PCT = 5`; `mapa_calor.SPACINGS`; `gaslab_web.py` acepta `spacing=original` (también es el valor por defecto) y, sin `minpct`, usa 5 % en Original y 0 % en las demás; `web/app.js` → `syncMinPct()` pone el % inicial de cada escala.
+- **Ojo:** se comparó con la versión del commit af9f702 en Flight_Data_6, mediciones.csv y el .dat de Miravalles: 117/117 escalas idénticas. Test: `test_original_is_the_old_scale`.
+
+## 2026-11-05 · El Excel aplica los límites del paso 2
+- **Qué:** el Excel exportaba las variables con los valores originales aunque hubiera límites en el paso 2. Ahora van ya ajustadas, igual que en el mapa de calor y el terreno: lo que pasa del máximo queda en el máximo y lo que baja del mínimo queda en el mínimo. Se ajustan las hojas Datos, Resumen y Gráficas, y también la vista previa. El título del Resumen indica los límites usados (p. ej. `· límites: co2_ppm máx 1000`), y la fila Contenido del paso 5 los menciona. La latitud, la longitud y la altura no se tocan.
+- **Dónde:** `gaslab_web.py` → `Dataset.excel_parts(limits=)`, que usa `values()` en las variables marcadas; `excel()` y `excel_preview()` lo pasan (la vista previa también a `series()`), y `/api/excel` lee `limits` con `parse_limits()`. `web/app.js` → `excelQuery()` manda `limitsMap()` y `enterExcel()` lo muestra. Test: `test_excel_uses_the_limits_of_step_2`.
+
+## 2026-11-04 · Desfase del paso 4: número primero, barra de ajuste fino
+- El campo numérico del **Desfase** va primero y acepta cualquier valor (paso 0,1 m). La barra ya no va de −100 a 100 m: mueve ±5 m alrededor del número actual y, al soltarla, se recentra en el nuevo valor. Así se puede llegar lejos escribiendo y afinar con la barra.
+
+## 2026-11-04 · Divisiones lineales o exponenciales; % mínimo en 0 % por defecto
+- Paso 3, fila **Escala**: selector **Lineal | Exponencial** (con ⓘ) para las divisiones iniciales. Exponencial: cada división es un factor fijo más ancha que la anterior, y la última es 1000 veces la primera (`mapa_calor.initial_edges`, `EXP_DECADES = 3`). Funciona también con valores negativos o cero.
+- El **% mínimo por división** empieza en 0 %: no se une ninguna división, así que en Lineal todas tienen el mismo ancho. El servidor también usa 0 % cuando no recibe el valor.
+- La misma escala se usa en el paso 4, en el PNG, en el GeoTIFF + QGIS y en el KMZ (parámetro `spacing` de la API).
+
+## 2026-11-04 · 3D más fluido
+- **Qué:** el usuario dijo que el 3D "se pega". Mediciones en Brave headless con `mediciones_16sep_gps_dron.csv`, por cuadro:
+  - Terreno con cubos: 129 ms. Sin cubos: 125 ms. Sin relieve: 31 ms. **Lo pesado es el relieve, no los cubos.**
+  - Con `pixelRatio` 2: 432 ms. A 1×: 243 ms.
+  - Además, cada movimiento de un deslizador rearmaba miles de prismas, y los cambios se encolaban.
+- **Cambios** (todos en `web/app.js`):
+  - **Resolución del terreno 3D:** se dibuja a 1× (`pixelRatio: min(dpr, 1)`). En pantallas con escala de Windows de 150–200 % es la mayor ganancia.
+  - **Altura sin rearmar:** la altura de las barras (`r` × altura máxima) y la de los cubos (`alt − ground + desfase`, o el desfase pegado al terreno) son expresiones del mapa. Mover la altura máxima, el desfase o cambiar de modo ya no rearma la geometría.
+  - **`latestOnly(map)`:** mientras el mapa procesa un cambio, los siguientes se juntan y solo se aplica el último, en lugar de encolarlos. `setFilter` se aplica solo si cambió el modo.
+  - **Barras perezosas:** se arman solo en 3D, y el ancho se aplica con espera (`scheduleBars`). En 3D se apaga la capa invisible de muestras, que solo sirve para leer valores en 2D.
+  - **Cubos del paso 4:** se rearman solo si el zoom cambió medio nivel o más, en vez de con cada zoom.
+  - **`hoverValues()`:** como mucho una consulta del valor bajo el mouse por cuadro, y ninguna mientras el mapa se mueve o gira.
+- **Ojo:** cambiar el tamaño de las teselas de relieve (512) o quitar el fundido de teselas no cambió nada medible. Quitar el relieve hace el 3D unas 4 veces más rápido; queda como opción a proponer.
+
+## 2026-11-04 · KMZ del paso 3 según la vista; deslizador de desfase
+- **Qué:** como pidió el usuario, el KMZ del paso 3 lleva lo que se ve: en **2D** la nube y en **3D** las barras. Las dos con la leyenda y la ruta. El del paso 4 sigue con las muestras de color a su altura. Ya no se mezclan muestras y barras encima de la nube, que en Google Earth web la tapaban (allá no hay capas ocultas). En el paso 4, el **Desfase** suma un deslizador de −100 a 100 m, sincronizado con el campo numérico.
+- **Dónde:** `Dataset.kmz()` con `kind` `'heat'` (2D) o `'bars'` (3D, archivo `…_barras3d.kmz`). La ruta va visible en todos. `web/app.js` → `#hkmz` elige el kind según `state.heat.view`, y `#toffsetr`/`#toffset` se sincronizan.
+- **Ojo:** el error "exceed the map's limit" al importar en la web es del proyecto (20 000 elementos en total), no del archivo; se resuelve con un proyecto nuevo. Test: `test_kmz_for_google_earth` (2D sin barras; 3D con 3 barras y sin nube).
+
+## 2026-11-04 · KMZ sin TimeStamp ni ScreenOverlay
+- **Qué:** el usuario probó en Google Earth en el navegador. Con **Data layer** todo salía amarillo y sin nube. Con **Map features** daba error: `Unsupported element: "TimeStamp"` en la ruta y `Unsupported element: "ScreenOverlay"` en la leyenda; la nube y los puntos de colores pasaban bien.
+- **Cambios:**
+  - La hora va en la descripción de cada punto, y en la de Inicio y Fin, en lugar de un `TimeStamp`.
+  - La leyenda es un punto **«Leyenda»** en la esquina noroeste de los datos, con la tabla de colores. Ya no es una imagen fija en pantalla, y el KMZ ya no lleva `files/leyenda.png`. `kmz.legend_png()` se borró.
+- **Ojo:** Google Earth Pro pierde la leyenda fija y la barra de tiempo, pero el mismo archivo sirve en los dos. El test verifica que no haya `TimeStamp` ni `ScreenOverlay`. Las barras 3D (`Polygon` extruido) y los puntos con altura `absolute` aún no se habían probado en la web: hay archivos de prueba en `CO2_georeferenciado/prueba_kmz/`.
+
+## 2026-11-04 · KMZ compatible con Google Earth en el navegador
+- **Qué:** un KMZ del mapa de calor se veía como "un montón de puntos amarillos". Tenía unos 12 800 elementos (muestras y barras ocultas), y Google Earth en el navegador importa como máximo 10 000 y no muestra leyendas fijas ([guía de importación KML](https://support.google.com/earth/community-guide/307322063/google-earth-kml-import-guide?hl=en)).
+- **Cambios:**
+  - Las muestras se reparten a lo largo del tramo hasta `MAX_FEATURES = 9000` elementos por KMZ: en el mapa de calor, mitad muestras y mitad barras.
+  - El ícono de los puntos es el círculo blanco de Google (`kmz.ICON`), que se tiñe con el color de cada división, en lugar de uno dentro del KMZ.
+  - La leyenda va también como tabla en la descripción de su carpeta.
+- **Ojo:** el ícono se descarga de Google; Google Earth necesita internet de todas formas para la imagen satelital. En Google Earth Pro todo sigue igual: leyenda fija, capas ocultas, etc.
+
+## 2026-11-04 · Alcance, enfriamiento y tamaño independientes
+- **Qué:** como pidió el usuario, el **Alcance** ahora solo cambia hasta dónde se extiende la nube; los colores y la opacidad del centro no cambian. El **Enfriamiento** decide el tamaño de la zona de calor, en metros: con 1, el 60 % a 10 m; con 4, a 5 m. El **Tamaño** sigue siendo el detalle alrededor de cada muestra. Esto reemplaza la versión de más abajo, donde el enfriamiento se repartía según el alcance.
+- **Dónde:** `mapa_calor.cloud()`. `COOL_SCALE_M = 10` m es la escala fija del enfriamiento (`exp(-cool·d²/2·10²)`, con d = metros a la muestra más cercana) y del promedio lejos de las muestras (segundo núcleo gaussiano de 10 m). El borde y la opacidad salen de la distancia a la muestra más cercana: opaca hasta la mitad del alcance y con un desvanecimiento suave (smoothstep) en la mitad exterior. Ya no hay dos caminos (alcance corto / largo): siempre es el mismo cálculo. `_distance_px(f, shift)` usa una celda gruesa fija (1/24 de la escala) alineada con la vista, así el resultado no depende del margen, que crece con el alcance.
+- **Ojo:**
+  - Con alcances cortos, el enfriamiento ahora es más suave que antes, porque ya no se mide en tamaños sino en metros (escala de 10 m).
+  - La exportación (GeoTIFF/KMZ) calcula siempre los dos núcleos: unos 5 s para una imagen de 2500 px. En la app, menos de 1 s por vista normal.
+  - Tests: `test_reach_only_extends_the_cloud_and_cooling_sets_the_heat_zone` (alcance 20 vs 40 m: el centro idéntico pixel a pixel; más enfriamiento, zona de calor más chica) y `test_cloud_cools_toward_the_sides` ajustado.
+
+## 2026-11-04 · Nube de color más parejo
+- **Qué:** con alcance largo, la nube era una línea fina con el color medido dentro de una franja azul plana de 30 m. Pasaba porque el enfriamiento dependía del Tamaño (1 m): el color llegaba al mínimo en 2–3 m y el resto de la nube quedaba de un solo color. Ahora el enfriamiento se reparte en todo el Alcance, y el color baja de a poco hasta el borde. El paso del valor de cada muestra al promedio de la zona también es más suave: va de ~2 a ~5 tamaños, en lugar de cambiar de golpe.
+- **Dónde:** `mapa_calor.cloud()`: el enfriamiento usa `near` (gaussiana de ancho alcance / 2,5) en vez de la densidad del Tamaño, y `blend` va de densidad 0,1 a 1e-6, al cuadrado. Con el alcance de 2,5 tamaños `near` es la misma densidad de antes, así que ahí no cambia nada. Textos de ayuda (ⓘ) y README actualizados.
+- **Ojo:** lejos de las muestras, el color es el promedio de las muestras cercanas (una estimación) que se va enfriando. Para ver menos color lejos: más enfriamiento o menos alcance.
+
+## 2026-11-03 · Google Earth (.kmz) para todo lo que tiene mapa
+- **Qué:** un botón **Google Earth (.kmz)** en la ruta del paso 1, en Guardar del paso 3 y en un nuevo Guardar del paso 4. Paso 1: la ruta. Paso 3: la nube, la leyenda, las muestras y las barras 3D (estas dos apagadas) y la ruta. Paso 4: las muestras a su altura (o pegadas al terreno) con el desfase, la leyenda y la ruta. Todos respetan el tramo, el GPS (en Ambos, la ruta con los dos), la señal, los límites y la escala.
+- **Dónde:** `kmz.py` (nuevo) → `route_kml()`, `points_kml()`, `bars_kml()`, `overlay_kml()`/`overlay_png()`, `legend_png()` y `build()`. `gaslab_web.py` → `Dataset.route_segments()`, `kmz_routes()`, `kmz()` y `/api/kmz?kind=route|heat|terrain`. `web/app.js` → `kmzQuery()` y `saveFrom()`, una descarga común que ahora usa también el Excel.
+- **Nube con alcance largo:** el borde de la nube (más de 4 tamaños) ahora sale de la **distancia a la muestra más cercana** (`mapa_calor._distance_px`: distancia euclidiana en dos pasadas sobre una cuadrícula gruesa). Antes salía de la suma de gaussianas, que a lo largo de una ruta con muchas muestras seguidas estiraba la nube a unos 47 m con 30 de alcance y la cortaba contra el borde de la imagen exportada. Ahora llega justo al alcance, en la app y en GeoTIFF/KMZ.
+- **Ojo:**
+  - La nube viene en Web Mercator y KML la estira en grados, así que `overlay_png()` remuestrea las filas a latitud lineal.
+  - Las alturas van como `absolute`, que en Google Earth es sobre el nivel del mar (EGM96); la diferencia con el elipsoide del GPS se corrige con el desfase.
+  - La fuente que trae Pillow no tiene el guion largo, así que la leyenda usa «a».
+  - Test: `test_kmz_for_google_earth`. Probado en Brave headless: las tres descargas, con el tramo 2 y Ambos.
+
+## 2026-11-03 · Terreno: desfase y pegado al relieve; nube de hasta 50 m; enfriamiento hasta 10
+- **Qué:**
+  - **Paso 4:** **Altura: Medida | Pegada al terreno** y **Desfase (m)**. El terreno 3D ya no exige columna de altura: sin ella, las muestras van pegadas al relieve.
+  - **Paso 3:** **Alcance** ahora va en metros (1–50 m, 30 por defecto). Antes iba en veces el Tamaño, como máximo 4 (8 m con 2 m de tamaño).
+  - **Enfriamiento:** de 0 a 10. Antes llegaba hasta 5.
+- **Dónde:**
+  - `mapa_calor.cloud()`: más allá de `CLOUD_SAFE_REACH` (4 tamaños) usa un segundo núcleo, de ancho alcance/2,5, para el borde y el valor de la cola. Para una muestra aislada da el mismo borde que la fórmula anterior, que sigue igual hasta 4 tamaños. La mezcla entre los dos promedios es suave, sin costura.
+  - `_gauss_fft()` rellena con ceros hasta un tamaño de FFT rápido (factores 2, 3 y 5), calcula el pico con el núcleo separable y reutiliza la transformada para varios sigmas. Con esto, una vista de 2600 px pasa de 3,8 a 2,0 s con el alcance de siempre, y una de 30 m tarda 3,5 s (0,6 s en una vista de 1400 px).
+  - La página manda `reach` = alcance en metros / tamaño. `Dataset.terrain()` acepta archivos sin altura (`altitude: None`).
+  - `web/app.js`: `showTerrainMode()` (aviso de muestras bajo el relieve, recalculado con el desfase) y `drawPoints3d()`.
+- **Ojo:** con 30 m y enfriamiento, alrededor de la ruta queda una franja azul (frío) de 30 m. Para verla menos tapada, baja la opacidad; con enfriamiento 0, la franja muestra el promedio de las muestras cercanas. Tests: `test_cloud_reach_up_to_30_m_with_a_small_size` y el caso sin altura en `test_terrain_puts_each_sample_above_ground`.
+
+## 2026-11-03 · Tramos como en la versión 1, y tema claro/oscuro
+- **Qué:** fila **Tramo** en el paso 1: **Inactividad > N s** + lista de tramos continuos, **Día de … a …** y **Todo**, como en la versión 1. El tramo limita todas las pestañas (gráficas, ruta, límites, mapa de calor, terreno, QGIS y Excel), y en el paso 1 las gráficas quedan encerradas en él. El paso 5 suma la opción **Tramo elegido**. Botón de **tema** (automático / claro / oscuro) en la cabecera.
+- **Por qué el tema:** la app sigue el tema del sistema (`prefers-color-scheme`). En Windows con modo claro, la app de Windows se veía clara, y en Linux oscura. Ahora se puede forzar.
+- **Dónde:** `gaslab_web.py` → `Dataset.tramos(zone, gap_s)` (`/api/tramos`) y `Dataset.window(zone, w0, w1)`. Todos los pedidos aceptan `w0`/`w1` (ms "de reloj" de la zona), y `series`, `route`, `heat_samples` (y con él `heat`, `terrain`, `heat_image` y `heat_zip`) reciben `window`. El Excel recibe el tramo como `start`/`end` y `tag` para el nombre. `web/app.js` → `loadTramos()`, `setTramo()`, `withTramo()`, `keepInside()` (encierra el paso 1) y `applyTheme()`/`redrawAll()`; Plotly guarda los colores al dibujar, así que cambiar el tema redibuja. `web/index.html` → `.tramobar`, `#theme` y un script en `<head>` que aplica el tema guardado antes de pintar.
+- **Ojo:** los tramos se cortan con la hora UTC (pausas reales), y la lista y los días se muestran en la zona elegida; cambiar de zona quita el tramo. Con la zona en `UTC`, las horas de `Día de … a …` son UTC. Test: `test_tramos_like_version_1_limit_every_step`. Probado en Brave headless con `mediciones_16sep_gps_dron.csv`: 4 tramos con 60 s, el desplazamiento queda dentro del tramo y el tema cambia y se recuerda al recargar.
+
+## 2026-11-03 · Paso 5: Excel con vista previa
+- **Qué:** nueva pestaña **5 · Excel** que arma el libro de la versión 1 (Resumen, Datos, Gráficas y Ruta) con las variables marcadas, la versión en uso, el GPS elegido y la zona horaria. Ofrece **todo el archivo** o el **tramo visible del paso 1**, y antes de descargarlo muestra una vista previa con las hojas como pestañas abajo.
+- **Dónde:** `gaslab_web.py` → `Dataset.excel_parts()` (lo común), `excel()` (bytes del .xlsx con `graficar.make_excel()`), `excel_preview()`, `/api/excel` y `/api/excel/preview`. `Handler.download()` y `attachment()` sirven la descarga y el .zip de QGIS con `filename*` UTF-8, para los nombres con acentos. `graficar.make_excel()` → parámetros nuevos `gps`, `also` y `route_name`; la versión 1 sigue igual. `web/app.js` → `enterExcel()`, `refreshExcel()` y `renderExcelSheet()`. `GasLab.spec` → `xlsxwriter` en `hiddenimports`.
+- **Ojo:** la página descarga con `fetch` y un blob, así un error se muestra como aviso en lugar de bajar un archivo con el error. La vista previa colorea cada gráfica igual que Excel (paleta por orden de columna), que puede diferir del color de la misma variable en el paso 1. Tests: `test_excel_like_version_1_with_preview` y la descarga en `test_upload_and_series_over_http`.
+
+## 2026-11-03 · Selector GPS sensor | Dron | Ambos
+- **Qué:** si el archivo trae la posición del dron, la cabecera muestra **GPS sensor | Dron | Ambos**. La fuente elegida se usa en la ruta, el mapa de calor, el terreno 3D, QGIS y el Excel. En Ambos, la ruta muestra las dos con la distancia sensor–dron, y los mapas usan la del dron.
+- **Dónde:** `gaslab_web.py` → `drone_columns()` (nombres flexibles), `distance_m()`, `Dataset.gps_columns(gps)` y `drone_info()` (en `info()['drone']`), y el parámetro `gps` en `route`, `heat_samples`, `heat`, `terrain`, `heat_image`, `heat_zip` y en las URLs. A diferencia de la calibración, no hay una segunda copia de los datos: el servidor guarda las dos posiciones y cada pedido dice cuál usar. `web/app.js` → `gpsMode`, `mapGps()`, `bothGps()` y `loadRoute()`, que en Ambos dibuja primero la ruta del sensor; `state.routeBase` corre los índices del resaltado y del cursor.
+- **Ojo:** en `mediciones_16sep_gps_dron.csv`, 1149 de 3774 filas tienen posición del dron. La distancia al GPS del sensor tiene mediana 4,7 m, pero promedio 44,7 m y máximo 356 m: conviene revisar cuál de los dos es confiable en esos tramos. Test: `test_drone_gps_is_a_second_source_for_the_maps`.
+
+## 2026-11-03 · Original | Calibrado | Comparación
+- **Qué:** el switch Calibrado pasó a ser un selector de tres opciones. **Comparación** dibuja en las gráficas de los pasos 1 y 2 la versión calibrada (color) y la sin calibrar (gris punteado). En el encabezado de cada gráfica se ve la diferencia calibrado − sin calibrar del tramo visible (promedio y máxima). Los mapas usan el calibrado. Si el switch anterior estaba encendido (`'1'` guardado), se abre en Calibrado.
+- **Dónde:** `gaslab_web.py` → `Dataset.series(other=)`, el parámetro `compare` de `/api/series` (id de la otra versión) y `cal_vars`; solo las variables con `_cal` llevan `compare` y `diff`. `web/app.js` → `calMode`, `compareId()`, `linesOf()` (el eje Y cubre las dos curvas) y `diffText()`. `web/index.html` y `web/app.css` → `.seg`.
+- **Ojo:** al reducir los datos se guardan los extremos de **las dos** versiones (`np.union1d` de los dos `minmax`), así ninguna pierde picos. Con el selector visible, en pantallas de unos 1500 px o menos la zona horaria pasa a una segunda línea.
+
+## 2026-11-03 · Switch Calibrado para columnas `_cal`
+- **Qué:** cuando el archivo trae columnas `X` y `X_cal` (Flight_Data), la lista de variables muestra cada una una sola vez, sin las 21 `_cal` repetidas, y aparece el switch **Calibrado** en la cabecera para usar las originales o las calibradas en todos los pasos. Cambiarlo no pierde la selección, los límites ni el encuadre de los mapas, y la elección se recuerda en el navegador (`localStorage`) para los próximos archivos. Los archivos sin `_cal` no cambian.
+- **Dónde:** `gaslab_web.py` → `calibration_pairs()`, `with_calibration()` y `load()`. El servidor guarda una segunda versión del archivo con id `<id>-cal`, con los mismos nombres de variables, y `info()` la anuncia como `cal_id`. `web/app.js` → `currentId()` y el evento del switch (`#cal`); el encuadre de los mapas se guarda con `state.info.id` para no reencuadrar al cambiar. `web/app.css` → `.switch` y una regla global `[hidden]`, porque `display` en `.zone` y `.switch` anulaba el atributo `hidden`.
+- **Ojo:**
+  - El original de una columna `_cal` pudo cambiar de nombre al cargar (`Latitude` → `latitud`), así que el emparejamiento prueba también `canonical_name()`.
+  - En `Flight_Data_6_..._cal_n0.csv` las `_cal` son idénticas a las originales (calibración n0), así que el switch no cambia nada visible con ese archivo. Se probó con una copia donde `Sensor_2_ppm_Avg_cal` = 2 × original.
+  - Tests: `test_calibrated_columns_are_a_second_version_with_the_same_names` y `test_old_files_leave_memory_together_with_their_calibrated_version`.
+
 ## 2026-11-02 · Abrir Excel (.xlsx)
 - **Qué:** la 2.0 y la versión 1 abren `.xlsx` y `.xlsm` además de CSV. Se usa la hoja `Datos` si existe (la que exporta GasLab) o la hoja con más datos. Un `.xls` antiguo da un mensaje pidiendo guardarlo como `.xlsx` o `.csv`. El botón ahora dice **Abrir archivo…**.
 - **Dónde:** `graficar.py` → `read_excel()` y `EXCEL_SUFFIXES`; `load_csv()` decide por la extensión y lo común pasó a `_prepare()`. `requirements.txt` → `openpyxl`. `GasLab.spec` → `openpyxl` en `hiddenimports`, porque pandas lo importa de forma dinámica y PyInstaller no lo ve. `web/index.html` → textos y `accept`.

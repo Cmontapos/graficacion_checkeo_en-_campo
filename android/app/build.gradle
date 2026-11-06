@@ -1,0 +1,85 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+// GasLab 2.0 se toma tal cual de la carpeta del proyecto (../..): los .py del servidor van como código Python y
+// web/ como assets (MainActivity los copia al almacenamiento interno). plotly.min.js se toma del .venv, así la
+// APK no necesita el paquete plotly. Se sincroniza en cada compilación: no hay copias a mano que se desactualicen.
+def project = file('../..')
+def generated = layout.buildDirectory.dir('gaslab').get().asFile
+
+tasks.register('syncGasLab', Sync) {
+    into generated
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE  // el .venv trae plotly dos veces (lib y lib64)
+    from(project) {
+        include 'gaslab_web.py', 'graficar.py', 'mapa_calor.py', 'kmz.py', 'terreno.py'
+        into 'python'
+    }
+    from(new File(project, 'web')) {
+        into 'assets/web'
+    }
+    from(fileTree(new File(project, '.venv')) { include '**/plotly/package_data/plotly.min.js' }) {
+        eachFile { path = 'assets/web/vendor/plotly.min.js' }
+        includeEmptyDirs = false
+    }
+    doLast {
+        if (!new File(generated, 'assets/web/vendor/plotly.min.js').isFile())
+            throw new GradleException('Falta plotly.min.js: crea el .venv con "make setup" en la carpeta del proyecto.')
+    }
+}
+preBuild.dependsOn 'syncGasLab'
+tasks.matching { it.name.endsWith('PythonSources') }.configureEach { dependsOn 'syncGasLab' }
+
+android {
+    namespace 'cr.gaslab.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'cr.gaslab.app'
+        minSdk 30
+        targetSdk 35
+        versionCode 1
+        versionName '2.0'
+        ndk {
+            abiFilters 'arm64-v8a'  // tablets y teléfonos actuales (Lenovo Idea Tab Pro incluida)
+        }
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir new File(generated, 'assets')
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug  // instalable directo, sin Play Store
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version '3.10'
+        pip {
+            install 'numpy'
+            install 'pandas'
+            install 'xlsxwriter'
+            install 'openpyxl'
+            install 'tzdata'
+            install 'pillow'
+        }
+    }
+    sourceSets {
+        main {
+            srcDir new File(generated, 'python')
+        }
+    }
+}

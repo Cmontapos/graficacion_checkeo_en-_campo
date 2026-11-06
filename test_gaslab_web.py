@@ -69,6 +69,33 @@ class GasLabWebTests(unittest.TestCase):
         self.assertEqual((edges[0], edges[-1]), (0, 100))
         self.assertGreater((edges[1:] > 50).sum(), (edges[1:] <= 50).sum())
 
+    def test_min_pct_0_is_linear_and_the_default(self):
+        values = np.r_[np.full(900, 400.0) + np.linspace(0, 5, 900), np.linspace(405, 2000, 100)]
+        edges, counts = mc.adaptive_classes(values, bins=20)  # sin % mínimo: no se une ninguna
+        self.assertEqual(len(counts), 20)
+        self.assertTrue(np.allclose(np.diff(edges), 80))
+        exp, counts = mc.adaptive_classes(values, bins=20, spacing='exponencial')
+        self.assertEqual((len(counts), counts.sum()), (20, 1000))
+        widths = np.diff(exp)
+        self.assertTrue(np.allclose(widths[1:] / widths[:-1], 10 ** (3 / 19)))  # cada una un factor fijo más ancha
+        self.assertAlmostEqual(widths[-1] / widths[0], 1000)
+
+    def test_original_is_the_old_scale(self):
+        rng = np.random.default_rng(1)
+        values = np.r_[rng.normal(420, 8, 900), rng.uniform(430, 1500, 100)]
+        old_counts, old_edges = np.histogram(values, bins=20, range=(values.min(), values.max()))  # algoritmo de antes, 5 %
+        edges, counts = list(old_edges), list(old_counts)
+        while len(counts) > 1 and min(counts) < 50:
+            i = int(np.argmin(counts))
+            j = i + 1 if i == 0 else i - 1 if i == len(counts) - 1 else (i - 1 if counts[i - 1] <= counts[i + 1] else i + 1)
+            a, b = min(i, j), max(i, j)
+            counts[a:b + 1] = [counts[a] + counts[b]]
+            del edges[b]
+        e, c = mc.adaptive_classes(values, bins=20, min_pct=mc.ORIGINAL_MIN_PCT, spacing='original')  # 5 %: igual que antes
+        self.assertTrue(np.array_equal(e, edges) and np.array_equal(c, counts))
+        self.assertLess(len(c), 20)
+        self.assertEqual(len(mc.adaptive_classes(values, bins=20, min_pct=0, spacing='original')[1]), 20)  # el % se puede cambiar
+
     def test_cloud_is_saturated_at_samples_and_empty_far_away(self):
         lon, lat = np.array([-84.0, -84.001]), np.array([10.0, 10.0])
         edges = np.array([0.0, 50.0, 100.0])
@@ -82,8 +109,8 @@ class GasLabWebTests(unittest.TestCase):
     def test_cloud_cools_toward_the_sides(self):
         lon, lat = np.array([-84.0]), np.array([10.0])
         edges = np.array([0.0, 25.0, 50.0, 75.0, 100.0])
-        flat = mc.cloud(lon, lat, np.array([100.0]), edges, size_m=2, opacity=1)
-        cool = mc.cloud(lon, lat, np.array([100.0]), edges, size_m=2, opacity=1, cool=2)
+        flat = mc.cloud(lon, lat, np.array([100.0]), edges, size_m=2, opacity=1, reach=15)
+        cool = mc.cloud(lon, lat, np.array([100.0]), edges, size_m=2, opacity=1, cool=2, reach=15)  # 30 m
         row = cool['values'][np.nanargmax(cool['values']) // cool['values'].shape[1]]
         center = int(np.nanargmax(row))
         self.assertAlmostEqual(row[center], 100, delta=1)  # en la muestra, el valor medido
@@ -136,12 +163,181 @@ class GasLabWebTests(unittest.TestCase):
         self.assertEqual(data['points']['ground'], [120.0, 120.0, 120.0])
         self.assertEqual(data['points']['above'], [0.0, 0.0, 30.0])  # 100 m y 150 m medidos sobre un terreno de 120 m
         self.assertEqual(data['under'], {'count': 2, 'max': 20.0})
+        # Sin columna de altura: la página pega las muestras al terreno.
+        _, flat = w.load(CSV.replace(b',altitud_m', b'').replace(b',100\n', b'\n').replace(b',101\n', b'\n').replace(b',150\n', b'\n'), 'plano.csv')
+        with mock.patch.object(terreno, 'elevation', lambda lon, lat: np.full(len(lon), 120.0)):
+            data = flat.terrain('co2_ppm', {})
+        self.assertEqual((data['altitude'], data['points']['ground'], data['no_alt']), (None, [120.0, 120.0, 120.0], 3))
+
+    def test_reach_only_extends_the_cloud_and_cooling_sets_the_heat_zone(self):
+        lon, lat = np.array([-84.0, -84.0002]), np.array([10.0, 10.0])  # dos muestras a ~22 m
+        edges = np.linspace(0, 100, 6)
+        x, y = mc.mercator(np.array([-84.0006, -83.9996]), np.array([9.9995, 10.0005]))
+        view = dict(bounds=(x[0], y[0], x[1], y[1]), res=(x[1] - x[0]) / 400)
+        run = lambda **k: mc.cloud(lon, lat, np.array([90.0, 30.0]), edges, size_m=1, opacity=1, **{'cool': 1, 'reach': 20, **k}, **view)
+        short, long = run(reach=20), run(reach=40)
+        center = short['rgba'][..., 3] == 255  # la parte opaca con alcance 20 m
+        self.assertTrue(center.sum() > 1000)
+        np.testing.assert_array_equal(short['rgba'][center], long['rgba'][center])  # el alcance no cambia el centro
+        self.assertGreater((long['rgba'][..., 3] > 0).sum(), (short['rgba'][..., 3] > 0).sum())  # solo llega más lejos
+        hot = lambda c: (c['values'] > 60).sum()  # zona de calor: valores sobre 60
+        self.assertGreater(hot(run(cool=0.5)), hot(run(cool=1)))
+        self.assertGreater(hot(run(cool=1)), hot(run(cool=4)))  # más enfriamiento = zona de calor más chica
+
+    def test_cloud_reach_up_to_30_m_with_a_small_size(self):
+        edges = np.array([0.0, 50.0, 100.0])
+        for reach_m in (10, 30):
+            c = mc.cloud(np.array([-84.0]), np.array([10.0]), np.array([50.0]), edges, size_m=1, opacity=1, reach=reach_m, cool=2)
+            radius = (c['rgba'][..., 3] > 0).any(axis=0).sum() * c['res'] * np.cos(np.radians(10)) / 2
+            self.assertAlmostEqual(radius, reach_m, delta=0.05 * reach_m + 0.3)
+            painted = c['rgba'][..., 3] > 0
+            self.assertFalse(np.isnan(c['values'][painted]).any())  # la cola lejana tiene valor (no se corta por precisión)
+        self.assertEqual(mc._fast_size(3070), 3072)
 
     def test_route_skips_invalid_gps(self):
         _, dataset = w.load(CSV, 'prueba.csv')
         route = dataset.route('UTC')
         self.assertEqual([v for v in route['lat'] if v is not None], [10.0, 10.0, 10.1])
         self.assertIn(None, route['lat'])
+
+    def test_calibrated_columns_are_a_second_version_with_the_same_names(self):
+        raw = (b'TIMESTAMP;Latitude;Longitude;CO2_Concentration_Avg;Sensor_2_ppm_Avg;Latitude_cal;Longitude_cal;CO2_Concentration_Avg_cal;Sensor_2_ppm_Avg_cal\n'
+               b'2026-09-16 00:00:00;38,41;14,95;400;1,5;38,41;14,95;410;2,5\n'
+               b'2026-09-16 00:00:01;38,42;14,96;401;1,6;38,42;14,96;411;2,6\n')
+        key, original = w.load(raw, 'Flight_Data.csv')
+        self.assertEqual(original.info()['cal_id'], key + '-cal')
+        calibrated = w.DATASETS[key + '-cal']
+        self.assertEqual(original.variables, calibrated.variables)
+        self.assertNotIn('Sensor_2_ppm_Avg_cal', original.variables)
+        self.assertEqual((original.lat_col, calibrated.lat_col), ('latitud', 'latitud'))  # 'Latitude_cal' va con 'latitud'
+        self.assertEqual(original.values('CO2_Concentration_Avg').tolist(), [400, 401])
+        self.assertEqual(calibrated.values('CO2_Concentration_Avg').tolist(), [410, 411])
+        self.assertEqual(w.load(CSV, 'sin_cal.csv')[1].info()['cal_id'], None)
+        both = calibrated.series(['CO2_Concentration_Avg'], 'UTC', other=original)['CO2_Concentration_Avg']
+        self.assertEqual((both['y'], both['compare'], both['diff']), ([410, 411], [400, 401], {'mean': 10.0, 'max': 10.0}))
+        self.assertNotIn('compare', calibrated.series(['CO2_Concentration_Avg'], 'UTC')['CO2_Concentration_Avg'])
+
+    def test_drone_gps_is_a_second_source_for_the_maps(self):
+        raw = (b'timestamp,co2_ppm,latitud,longitud,altitud_m,latitud_dron,longitud_dron,altitud_dron_m,altura_relativa_dron_m\n'
+               b'2026-09-16T12:00:00Z,400,10.0,-84.0,100,10.0001,-84.0,130,30\n'
+               b'2026-09-16T12:00:01Z,410,10.0,-84.0,100,,,,\n'
+               b'2026-09-16T12:00:02Z,420,10.0,-84.0,100,10.0,-84.0,131,31\n')
+        _, dataset = w.load(raw, 'dron.csv')
+        drone = dataset.info()['drone']
+        self.assertEqual((drone['lat'], drone['lon'], drone['alt'], drone['rows']), ('latitud_dron', 'longitud_dron', 'altitud_dron_m', 2))
+        self.assertAlmostEqual(drone['gap']['max'], 11.1, delta=0.1)  # 0,0001° de latitud
+        self.assertNotIn('latitud_dron', dataset.variables)
+        self.assertIn('altura_relativa_dron_m', dataset.variables)
+        self.assertEqual([v for v in dataset.route('UTC', 'dron')['lat'] if v is not None], [10.0001, 10.0])
+        self.assertEqual(dataset.heat('co2_ppm', {}, gps='dron')['samples'], 2)  # la fila sin dron queda fuera
+        with mock.patch.object(terreno, 'elevation', lambda lon, lat: np.full(len(lon), 100.0)):
+            self.assertEqual(dataset.terrain('co2_ppm', {}, gps='dron')['altitude'], 'altitud_dron_m')
+        self.assertIsNone(w.load(CSV, 'sin_dron.csv')[1].info()['drone'])
+        with self.assertRaises(ValueError):
+            w.load(CSV, 'sin_dron.csv')[1].route('UTC', 'dron')
+        self.assertEqual(w.drone_columns(['Drone Lat', 'drone_lng', 'UAV height rel', 'UAV altitude'])['alt'], 'UAV altitude')
+
+    def test_campbell_toa5_dat(self):
+        dat = ('"TOA5","LOGGER","CR300","1","OS","CPU:x.cr300","1","Data_Results"\r\n'
+               '"TIMESTAMP","RECORD","Sensor_SO2_ppm_Avg","CO2_Concentration_Avg","Latitude","Longitude","Altitude"\r\n'
+               '"TS","RN","ppm","","grados","grados",""\r\n'
+               '"","","Avg","Avg","Smp","Smp","Smp"\r\n'
+               '"2025-05-28 20:11:48",1,0.5,"NAN",9.9396,-84.0424,1251.8\r\n'
+               '"2025-05-28 20:11:47",0,0.2,410,9.9397,-84.0425,1251.0\r\n').encode()
+        info = w.load(dat, 'vuelo.dat')[1].info()
+        self.assertEqual((info['rows'], info['time_column'], info['gps']), (2, 'timestamp', True))
+        self.assertIn('CO2_Concentration_Avg', info['variables'])
+        self.assertIn('Sensor_SO2_ppm_Avg', info['defaults'])
+
+    def test_excel_like_version_1_with_preview(self):
+        import openpyxl
+        _, dataset = w.load(CSV, 'prueba.csv')
+        name, body = dataset.excel(['co2_ppm', 'SO2_ppm'], 'UTC')
+        book = openpyxl.load_workbook(io.BytesIO(body))
+        self.assertEqual((name, book.sheetnames), ('prueba.xlsx', ['Resumen', 'Datos', 'Gráficas', 'Ruta']))
+        self.assertEqual([c.value for c in book['Datos'][1]], ['Fecha y hora (UTC)', 'Transcurrido (s)', 'co2_ppm', 'SO2_ppm', 'latitud', 'longitud', 'altitud_m'])
+        self.assertEqual([r[2].value for r in book['Datos'].iter_rows(min_row=2)], [400, 405, 410, 500])  # en orden de tiempo
+        preview = dataset.excel_preview(['co2_ppm', 'SO2_ppm'], 'UTC')
+        self.assertEqual(preview['headers'], [c.value for c in book['Datos'][1]])
+        self.assertEqual(preview['stats'][0], {'name': 'co2_ppm', 'min': 400, 'mean': 428.75, 'max': 500, 'count': 4})
+        self.assertEqual(preview['first'][0][:3], ['16/09/2026 12:00:00', 0.0, 400])
+        # Solo el tramo visible: de 12:00:00 a 12:00:01 (ms 'de reloj' de la zona).
+        t, _ = dataset.local_ms('UTC')
+        name, body = dataset.excel(['co2_ppm'], 'UTC', t[1], t[2])
+        self.assertEqual((name, openpyxl.load_workbook(io.BytesIO(body))['Datos'].max_row), ('prueba_20260916_1200.xlsx', 3))
+        with self.assertRaises(ValueError):
+            dataset.excel([], 'UTC')
+
+    def test_excel_uses_the_limits_of_step_2(self):
+        import openpyxl
+        _, dataset = w.load(CSV, 'prueba.csv')  # co2_ppm: 400, 405, 410, 500
+        limits = {'co2_ppm': (402.0, 408.0)}
+        _, body = dataset.excel(['co2_ppm', 'SO2_ppm'], 'UTC', limits=limits)
+        book = openpyxl.load_workbook(io.BytesIO(body))
+        self.assertEqual([r[2].value for r in book['Datos'].iter_rows(min_row=2)], [402, 405, 408, 408])
+        self.assertIn('límites: co2_ppm mín 402 y máx 408', book['Resumen']['A1'].value)
+        preview = dataset.excel_preview(['co2_ppm'], 'UTC', limits=limits)
+        self.assertEqual((preview['stats'][0]['min'], preview['stats'][0]['max']), (402, 408))
+        self.assertLessEqual(max(v for v in preview['charts']['co2_ppm']['y'] if v is not None), 408)
+        self.assertEqual(dataset.columns['co2_ppm'].max(), 500)  # el dato original no cambia
+
+    def test_tramos_like_version_1_limit_every_step(self):
+        _, dataset = w.load(CSV, 'prueba.csv')  # 12:00:00, :01, :02 y 13:00:00 (una pausa de una hora)
+        data = dataset.tramos('UTC', 1200)
+        self.assertEqual([(t['rows'], t['seconds']) for t in data['tramos']], [(3, 2.0), (1, 0.0)])
+        self.assertEqual(data['days'][0]['hours'], [12, 13])
+        self.assertEqual(len(dataset.tramos('UTC', 7200)['tramos']), 1)
+        first = data['tramos'][0]
+        window = dataset.window('UTC', first['t0'], first['t1'])
+        self.assertEqual(window, (0, 3))
+        self.assertEqual(dataset.series(['co2_ppm'], 'UTC', window=window)['co2_ppm']['y'], [400, 405, 410])
+        self.assertEqual(dataset.heat('co2_ppm', {}, window=window)['samples'], 2)  # la muestra 0,0 no tiene GPS
+        self.assertEqual([v for v in dataset.route('UTC', window=window)['lat'] if v is not None], [10.0, 10.0])
+        with self.assertRaises(ValueError):
+            dataset.heat('co2_ppm', {}, window=dataset.window('UTC', first['t0'] + 500, first['t0'] + 900))  # sin muestras con GPS
+        self.assertIsNone(dataset.window('UTC'))
+        self.assertEqual(dataset.excel(['co2_ppm'], 'UTC', first['t0'], first['t1'], tag='tramo1')[0], 'prueba_tramo1_20260916_1200.xlsx')
+
+    def test_kmz_for_google_earth(self):
+        from xml.dom import minidom
+        _, dataset = w.load(CSV, 'prueba.csv')
+        read = lambda body: zipfile.ZipFile(io.BytesIO(body))
+        name, body = dataset.kmz('route')
+        kml = read(body).read('doc.kml').decode()
+        minidom.parseString(kml)
+        self.assertEqual(name, 'prueba_ruta.kmz')
+        self.assertNotIn('<LineString>', kml)  # aquí no hay dos puntos seguidos con GPS: solo Inicio y Fin
+        self.assertIn('2026-09-16T12:00:00Z', kml)  # Inicio con su hora
+        _, line = w.load(b'timestamp,co2_ppm,latitud,longitud\n2026-09-16T12:00:00Z,1,10,-84\n2026-09-16T12:00:01Z,2,10.0001,-84\n', 'linea.csv')
+        self.assertIn('<coordinates>-84.0000000,10.0000000 -84.0000000,10.0001000</coordinates></LineString>', read(line.kmz('route')[1]).read('doc.kml').decode())
+        name, body = dataset.kmz('heat', 'co2_ppm', {}, look=(1.0, 0.95, 1.0, 30.0))
+        archive = read(body)
+        kml = archive.read('doc.kml').decode()
+        minidom.parseString(kml)
+        self.assertEqual(sorted(archive.namelist()), ['doc.kml', 'files/nube.png'])
+        self.assertIn('<GroundOverlay>', kml)
+        self.assertNotIn('<ScreenOverlay>', kml)  # Google Earth en el navegador la rechaza
+        self.assertNotIn('<TimeStamp>', kml)  # también
+        self.assertIn('<td style="background:', kml)  # leyenda también como tabla (Google Earth en el navegador)
+        self.assertIn(w.kmz.ICON, kml)
+        self.assertNotIn('<Polygon>', kml)  # en 2D solo la nube (con la leyenda y la ruta)
+        name, body = dataset.kmz('bars', 'co2_ppm', {})
+        bars = read(body).read('doc.kml').decode()
+        self.assertEqual((name, bars.count('<Polygon>'), '<GroundOverlay>' in bars), ('prueba_co2_ppm_barras3d.kmz', 3, False))  # 3D: las barras
+        north = float(kml.split('<north>')[1].split('<')[0])
+        self.assertAlmostEqual(north, 10.1 + 31.5 / 111320, delta=0.0002)  # la nube llega ~30 m (+ medio tamaño) más allá
+        _, body = dataset.kmz('terrain', 'co2_ppm', {}, offset=-10)
+        kml = read(body).read('doc.kml').decode()
+        self.assertIn('<altitudeMode>absolute</altitudeMode><coordinates>-84.0000000,10.0000000,90.00', kml)  # 100 m − 10 m
+        _, body = dataset.kmz('terrain', 'co2_ppm', {}, mode='ground', offset=5)
+        self.assertIn('<altitudeMode>relativeToGround</altitudeMode><coordinates>-84.0000000,10.0000000,5.00', read(body).read('doc.kml').decode())
+        self.assertIn('ffbbggrr'.replace('bb', '86').replace('gg', '7f').replace('rr', '00'), w.kmz.kml_color('#007f86'))
+
+    def test_old_files_leave_memory_together_with_their_calibrated_version(self):
+        raw = b'TIMESTAMP;x;x_cal\n2026-09-16 00:00:00;1;2\n'
+        with mock.patch.object(w, 'DATASETS', {}):
+            keys = [w.load(raw, 'f.csv')[0] for _ in range(w.KEEP_DATASETS + 1)]
+            self.assertEqual(set(w.DATASETS), {k + suffix for k in keys[1:] for suffix in ('', '-cal')})
 
     def test_pages_close_after_last_window_but_not_on_reload(self):
         pages = w.Pages(0)
@@ -170,6 +366,15 @@ class GasLabWebTests(unittest.TestCase):
             self.assertEqual(info['name'], 'medición')
             data = json.load(urllib.request.urlopen(f"{base}/api/series?id={info['id']}&zone=UTC&vars=co2_ppm,altitud_m"))
             self.assertEqual(set(data), {'co2_ppm', 'altitud_m'})
+            excel = urllib.request.urlopen(f"{base}/api/excel?id={info['id']}&zone=UTC&vars=co2_ppm")
+            self.assertIn("filename*=UTF-8''medici%C3%B3n.xlsx", excel.headers['Content-Disposition'])
+            self.assertEqual(excel.read()[:2], b'PK')
+            preview = json.load(urllib.request.urlopen(f"{base}/api/excel/preview?id={info['id']}&zone=UTC&vars=co2_ppm"))
+            for minpct, spacing in ((0, 'lineal'), (10, 'exponencial'), (0, 'original'), ('', 'original')):  # el handler pasa la escala a heat, terrain y kmz
+                heat = json.load(urllib.request.urlopen(f"{base}/api/heat?id={info['id']}&var=co2_ppm&bins=4&minpct={minpct}&spacing={spacing}"))
+                self.assertEqual(len(heat['classes']), 4 if minpct == 0 else len(heat['classes']))
+                self.assertEqual(urllib.request.urlopen(f"{base}/api/kmz?id={info['id']}&kind=bars&var=co2_ppm&minpct={minpct}&spacing={spacing}").status, 200)
+            self.assertEqual(preview['rows'], 4)
             bad = urllib.request.Request(base + '/api/upload', data=b'', headers={'X-Filename': 'x.csv'})
             with self.assertRaises(urllib.error.HTTPError):
                 urllib.request.urlopen(bad)

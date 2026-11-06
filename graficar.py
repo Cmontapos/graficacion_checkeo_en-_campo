@@ -121,7 +121,7 @@ def read_excel(path, sheet=None):
 
 
 def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
-    """CSV (o Excel .xlsx/.xlsm) con columnas normalizadas y filas en orden cronológico. En un Excel,
+    """CSV, .dat TOA5 de Campbell (o Excel .xlsx/.xlsm) con columnas normalizadas y filas en orden cronológico. En un Excel,
     frame.attrs dice la hoja usada ('sheet') y las que tienen datos ('sheets')."""
     if Path(path).stat().st_size == 0:
         raise ValueError(f'El archivo {Path(path).name} está vacío (0 bytes): no tiene encabezado ni datos.')
@@ -132,6 +132,15 @@ def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
         return frame
     source = path
     raw = Path(path).read_bytes()
+    toa5 = raw.lstrip(b'\xef\xbb\xbf').startswith((b'"TOA5"', b'TOA5'))
+    if toa5:
+        # Campbell TOA5 (.dat de LoggerNet): línea 1 = datos del logger, 2 = nombres, 3 = unidades, 4 = tipo de
+        # promedio. Se dejan solo los nombres y los datos. Los valores faltantes vienen como "NAN".
+        lines = raw.decode('utf-8-sig', errors='replace').splitlines()
+        if len(lines) < 2:
+            raise ValueError(f'El archivo {Path(path).name} es TOA5 (Campbell) pero no tiene encabezado de columnas.')
+        raw = '\n'.join([lines[1]] + lines[4:]).encode()
+        source = io.BytesIO(raw)
     if b'\x00' in raw:
         # Escritura interrumpida (SD/USB): bloques de bytes nulos. Se quitan y se descartan las filas
         # que quedaron truncadas (con distinta cantidad de campos que el encabezado).
@@ -144,7 +153,8 @@ def load_csv(path, only_new=False, time_column=None, unit='auto', sheet=None):
         good = [lines[0]] + [line for line in lines[1:] if line.count(sep) == width]
         source = io.StringIO('\n'.join(good))
     try:
-        frame = pd.read_csv(source, sep=None, engine='python', encoding='utf-8-sig')
+        frame = pd.read_csv(source, sep=None, engine='python', encoding='utf-8-sig',
+                            na_values=['NAN', 'INF', '-INF'] if toa5 else None)
     except (pd.errors.EmptyDataError, pd.errors.ParserError, csv.Error) as exc:
         raise ValueError(f'No se pudo leer {Path(path).name} como CSV: {exc}') from exc
     return _prepare(frame, only_new, time_column, unit)
@@ -362,9 +372,12 @@ def default_variables(variables, columns=None):
         or [c for c in variables if c not in GPS_NAMES][:4] or variables[:1]
 
 
-def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=DEFAULT_ZONE, unit='auto', title='MicroGas'):
+def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=DEFAULT_ZONE, unit='auto', title='MicroGas',
+               gps=None, also=(), route_name='Ruta GPS'):
     """Libro Excel con lo que llega en `frame` (el visor pasa solo el tramo elegido): hojas Resumen, Datos,
-    Gráficas (un gráfico nativo de Excel por variable) y Ruta (latitud/longitud, si hay GPS)."""
+    Gráficas (un gráfico nativo de Excel por variable) y Ruta (latitud/longitud, si hay GPS).
+    gps: (latitud, longitud) para la hoja Ruta si no son las de nombre conocido (p. ej. las del dron);
+    also: otras columnas que van en Datos sin gráfica ni resumen."""
     import datetime
     try:
         import xlsxwriter
@@ -375,9 +388,8 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
         raise ValueError('No hay muestras para exportar.')
     variables = numeric_columns(frame)
     chosen = default_variables(variables, columns)
-    lat_col = next((c for c in LAT_COLUMNS if c in frame), None)
-    lon_col = next((c for c in LON_COLUMNS if c in frame), None)
-    extra = [c for c in (lat_col, lon_col, altitude_column(frame.columns)) if c and c not in chosen]
+    lat_col, lon_col = gps or (next((c for c in LAT_COLUMNS if c in frame), None), next((c for c in LON_COLUMNS if c in frame), None))
+    extra = list(dict.fromkeys(c for c in (lat_col, lon_col, *also, altitude_column(frame.columns)) if c and c in frame and c not in chosen))
     local = None
     try:
         local, _, dates = time_axis(frame, 'fecha', time_column, zone, unit)
@@ -478,12 +490,12 @@ def make_excel(frame, output, columns=None, time_column='fecha_hora_utc', zone=D
         route = book.add_worksheet('Ruta')
         column_of.update({c: headers.index(c) for c in (lat_col, lon_col)})
         chart = book.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-        chart.add_series({'name': 'Ruta GPS', 'categories': ['Datos', 1, column_of[lon_col], n, column_of[lon_col]],
+        chart.add_series({'name': route_name, 'categories': ['Datos', 1, column_of[lon_col], n, column_of[lon_col]],
                           'values': ['Datos', 1, column_of[lat_col], n, column_of[lat_col]],
                           'line': {'color': '#007f86', 'width': 1.5}, 'marker': {'type': 'circle', 'size': 3, 'fill': {'color': '#007f86'}, 'border': {'none': True}}})
         lat, lon = numeric(frame[lat_col]).dropna(), numeric(frame[lon_col]).dropna()
         pad_lat, pad_lon = max((lat.max() - lat.min()) * 0.05, 1e-5), max((lon.max() - lon.min()) * 0.05, 1e-5)
-        chart.set_title({'name': 'Ruta GPS (sin fondo de mapa)'})
+        chart.set_title({'name': f'{route_name} (sin fondo de mapa)'})
         chart.set_x_axis({'name': 'Longitud', 'min': lon.min() - pad_lon, 'max': lon.max() + pad_lon, 'num_format': '0.0000'})
         chart.set_y_axis({'name': 'Latitud', 'min': lat.min() - pad_lat, 'max': lat.max() + pad_lat, 'num_format': '0.0000'})
         chart.set_legend({'none': True})
@@ -559,7 +571,7 @@ def gui():
     time_box = None
 
     def open_csv():
-        path = filedialog.askopenfilename(initialdir=documents_dir(), filetypes=[('CSV o Excel', '*.csv *.xlsx *.xlsm'), ('CSV', '*.csv'), ('Excel', '*.xlsx *.xlsm')])
+        path = filedialog.askopenfilename(initialdir=documents_dir(), filetypes=[('CSV, DAT o Excel', '*.csv *.dat *.xlsx *.xlsm'), ('CSV', '*.csv'), ('Campbell TOA5', '*.dat'), ('Excel', '*.xlsx *.xlsm')])
         if not path:
             return
         try:

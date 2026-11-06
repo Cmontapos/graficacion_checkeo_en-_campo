@@ -110,9 +110,13 @@ async function openFile(file, sheet) {
     const info = await api('/api/upload', { method: 'POST', body: file, headers });
     state.file = file;
     showSheets(info);
-    state.id = info.id;
+    $('calbox').hidden = !info.cal_id;
+    $('gpsbox').hidden = !info.drone;
+    state.id = currentId(info);
     state.info = info;
     state.range = state.range2 = state.shown = null;
+    state.tramo = null;
+    showTramo();
     state.bounds = {};
     state.selected = info.defaults.length ? [...info.defaults] : info.variables.filter((v) => v !== info.altitude).slice(0, 1);
     $('fileinfo').textContent = fileText(info);
@@ -127,13 +131,73 @@ async function openFile(file, sheet) {
     for (const tab of document.querySelectorAll('.tab')) tab.disabled = false;
     state.heat.name = state.heat.fitted = state.terrain.fitted = null;
     showStep(state.step);
-    await Promise.all([loadRoute(), refresh()]);
+    await Promise.all([loadTramos(), loadRoute(), refresh()]);
   } catch (error) {
     $('fileinfo').textContent = state.info ? fileText(state.info) : 'Ningún archivo abierto';
     if (state.info) showSheets(state.info); // el selector vuelve a la hoja que sigue abierta
     toast(error.message, true);
   }
 }
+
+// Original / Calibrado / Comparación: si el archivo trae columnas '_cal', el servidor guarda las dos versiones con
+// los mismos nombres de variables y la página solo cambia de id; la selección, los límites y la vista se conservan.
+// En Comparación las gráficas piden también la versión original (compare=) y los mapas usan la calibrada.
+const CAL_KEY = 'gaslab.calibrado';
+const CAL_MODES = { original: 'Usando las columnas originales.', cal: 'Usando las columnas calibradas (_cal).',
+  compare: 'Comparación: las gráficas muestran calibrado y sin calibrar (gris punteado); los mapas usan el calibrado.' };
+let calMode = 'original';
+try { calMode = { 1: 'cal', 0: 'original' }[localStorage.getItem(CAL_KEY)] || localStorage.getItem(CAL_KEY) || 'original'; } catch (error) { /* sin almacenamiento */ }
+if (!CAL_MODES[calMode]) calMode = 'original';
+const currentId = (info) => (calMode !== 'original' && info.cal_id) || info.id;
+const compareId = () => (calMode === 'compare' && state.info && state.info.cal_id ? state.info.id : null);
+const showCalMode = () => { for (const b of document.querySelectorAll('[data-cal]')) b.classList.toggle('on', b.dataset.cal === calMode); };
+showCalMode();
+$('calbox').addEventListener('click', (event) => {
+  const mode = event.target.dataset && event.target.dataset.cal;
+  if (!mode || mode === calMode) return;
+  calMode = mode;
+  showCalMode();
+  try { localStorage.setItem(CAL_KEY, mode); } catch (error) { /* no se recuerda, pero funciona */ }
+  if (!state.info || !state.info.cal_id) return;
+  state.id = currentId(state.info);
+  loadRoute();
+  refresh();
+  if (state.step === 2) refreshBig();
+  if (state.step === 3) refreshHeat();
+  if (state.step === 4) refreshTerrain();
+  if (state.step === 5) enterExcel();
+  toast(CAL_MODES[mode]);
+});
+// Líneas que cuentan para el rango del eje Y: la serie, y en Comparación también la otra versión.
+const linesOf = (series, ...extra) => [series.y, ...extra, ...(series.compare ? [series.compare] : [])];
+const diffText = (d) => (d ? ` · calibrado − sin calibrar: promedio ${num(d.mean)}, máx ${num(d.max)}` : '');
+
+// GPS sensor / Dron / Ambos: si el archivo trae también la posición del dron (latitud_dron, drone_lat...), los mapas
+// pueden usar esa. En Ambos la ruta muestra las dos (la del sensor en gris punteado) y los mapas usan la del dron.
+const GPS_KEY = 'gaslab.gps';
+const GPS_MODES = { sensor: 'Mapas con el GPS del sensor.', dron: 'Mapas con el GPS del dron (las filas sin posición del dron quedan sin punto).',
+  both: 'Ruta con los dos GPS (sensor en gris punteado); los mapas de calor y terreno usan el del dron.' };
+let gpsMode = 'sensor';
+try { gpsMode = localStorage.getItem(GPS_KEY) || 'sensor'; } catch (error) { /* sin almacenamiento */ }
+if (!GPS_MODES[gpsMode]) gpsMode = 'sensor';
+const mapGps = () => (gpsMode !== 'sensor' && state.info && state.info.drone ? 'dron' : 'sensor');
+const bothGps = () => gpsMode === 'both' && state.info && state.info.drone;
+const showGpsMode = () => { for (const b of document.querySelectorAll('[data-gps]')) b.classList.toggle('on', b.dataset.gps === gpsMode); };
+showGpsMode();
+$('gpsbox').addEventListener('click', (event) => {
+  const mode = event.target.dataset && event.target.dataset.gps;
+  if (!mode || mode === gpsMode) return;
+  gpsMode = mode;
+  showGpsMode();
+  try { localStorage.setItem(GPS_KEY, mode); } catch (error) { /* no se recuerda, pero funciona */ }
+  if (!state.info || !state.info.drone) return;
+  loadRoute();
+  if (state.step === 3) refreshHeat();
+  if (state.step === 4) refreshTerrain();
+  if (state.step === 5) enterExcel();
+  toast(GPS_MODES[mode]);
+});
+const meters = (v) => `${num(v)} m`;
 
 const fileText = (info) => `${info.name} · ${fmt(info.rows)} filas · tiempo: ${info.time_column}`;
 
@@ -203,8 +267,112 @@ $('zone').addEventListener('change', () => {
   if (!state.zones.has(zone)) return toast(`Zona desconocida: «${zone}». Usa un nombre IANA, p. ej. UTC o America/Costa_Rica.`, true);
   state.zone = zone;
   state.range = state.range2 = null; // el rango estaba en la hora de la zona anterior
-  if (state.id) { loadRoute(); refresh(); if (state.step === 2) refreshBig(); }
+  if (state.tramo) { resetTramoBoxes(); state.tramo = null; showTramo(); } // y el tramo también
+  if (state.id) { loadTramos(); loadRoute(); refresh(); if (state.step === 2) refreshBig(); if (state.step >= 3) showStep(state.step); }
 });
+
+// ---------- tramos (como la versión 1) ----------
+// Inactividad > N s + Tramo (tramos continuos), o Día de … a …; Todo quita el límite. El tramo vale para todas las
+// pestañas: el servidor recibe w0/w1 (ms 'de reloj' de la zona) y solo usa esas muestras en gráficas, mapas y Excel.
+state.tramo = null; // { w: [inicio, fin], tag (para el nombre del Excel), text }
+let tramoData = null;
+const two = (n) => String(n).padStart(2, '0');
+const clock = (ms) => wall(ms).slice(11, 19);
+const dayText = (ms) => { const d = new Date(ms); return `${two(d.getUTCDate())}/${two(d.getUTCMonth() + 1)}`; };
+const durText = (s) => (s >= 3600 ? `${Math.floor(s / 3600)} h ${two(Math.floor((s % 3600) / 60))} min` : `${Math.floor(s / 60)} min ${two(Math.floor(s % 60))} s`);
+const withTramo = (query) => { if (state.tramo) { query.set('w0', state.tramo.w[0]); query.set('w1', state.tramo.w[1]); } return query; };
+
+// Rango del paso 1 dentro del tramo: no se puede ver fuera de él (null = el tramo completo).
+function keepInside(range) {
+  if (!state.tramo || !range) return range;
+  const [a, b] = state.tramo.w;
+  if (range[1] - range[0] >= b - a) return null;
+  let [lo, hi] = range;
+  if (lo < a) { hi += a - lo; lo = a; }
+  if (hi > b) { lo -= hi - b; hi = b; }
+  return lo === range[0] && hi === range[1] ? range : [lo, hi];
+}
+
+async function loadTramos() {
+  try {
+    tramoData = await api(`/api/tramos?id=${state.id}&zone=${encodeURIComponent(state.zone)}&gap=${Number($('gap').value) || 1200}`);
+  } catch (error) {
+    return toast(error.message, true);
+  }
+  const list = tramoData.tramos;
+  $('tramo').replaceChildren(new Option(`Todo · ${list.length} tramo${list.length > 1 ? 's' : ''}`, ''), ...list.map((x, k) => {
+    const end = dayText(x.t0) === dayText(x.t1) ? clock(x.t1) : `${dayText(x.t1)} ${clock(x.t1)}`;
+    return new Option(`${k + 1} · ${dayText(x.t0)} ${clock(x.t0)} → ${end} · ${durText(x.seconds)} · ${fmt(x.rows)} muestras`, k);
+  }));
+  $('day').replaceChildren(new Option('—', ''), ...tramoData.days.map((d, k) => new Option(dayText(d.t0), k)));
+  fillHours();
+}
+
+function fillHours() {
+  const day = tramoData && tramoData.days[$('day').value];
+  for (const id of ['hfrom', 'hto']) {
+    $(id).replaceChildren(...(day ? day.hours.map((h) => new Option(`${two(h)}:00`, h)) : [new Option('--:--', '')]));
+    $(id).disabled = !day;
+  }
+  if (day) $('hto').value = day.hours[day.hours.length - 1]; // por defecto, todo el día
+}
+
+function resetTramoBoxes() {
+  $('tramo').value = '';
+  $('day').value = '';
+  fillHours();
+}
+
+function showTramo() {
+  $('tramoinfo').textContent = state.tramo ? `Gráficas, mapas y Excel solo con ${state.tramo.text}. «Todo» quita el límite.` : '';
+  $('alltime').disabled = !state.tramo;
+}
+
+function setTramo(tramo) {
+  state.tramo = tramo;
+  state.range = state.range2 = null;
+  state.heat.fitted = state.terrain.fitted = null; // los mapas se encuadran en el tramo
+  showTramo();
+  if (!state.id) return;
+  loadRoute();
+  refresh();
+  if (state.step === 2) refreshBig();
+  if (state.step === 3) refreshHeat();
+  if (state.step === 4) refreshTerrain();
+  if (state.step === 5) enterExcel();
+}
+
+$('gap').addEventListener('change', async () => {
+  if (!state.id) return;
+  const wasList = state.tramo && state.tramo.kind === 'tramo';
+  await loadTramos();
+  if (wasList) setTramo(null); // los tramos cambiaron: se vuelve a Todo
+  else if (state.tramo) $('day').value = state.tramo.day;
+});
+$('tramo').addEventListener('change', () => {
+  const k = $('tramo').value;
+  $('day').value = '';
+  fillHours();
+  if (k === '') return setTramo(null);
+  const x = tramoData.tramos[k];
+  setTramo({ kind: 'tramo', w: [x.t0, x.t1], tag: `tramo${Number(k) + 1}`, text: `el tramo ${Number(k) + 1} (${dayText(x.t0)} ${clock(x.t0)} → ${clock(x.t1)}, ${fmt(x.rows)} muestras)` });
+});
+function applyHours() {
+  const k = $('day').value, day = tramoData.days[k];
+  let from = Number($('hfrom').value), to = Number($('hto').value);
+  if (to < from) { [from, to] = [to, from]; $('hfrom').value = from; $('hto').value = to; } // el fin no puede quedar antes del inicio
+  setTramo({ kind: 'day', day: k, w: [day.t0 + from * 3600000, day.t0 + (to + 1) * 3600000 - 1], tag: `${dayText(day.t0).replace('/', '')}_${two(from)}-${two(to + 1)}h`,
+    text: `el día ${dayText(day.t0)} de ${two(from)}:00 a ${two(to + 1)}:00` });
+}
+$('day').addEventListener('change', () => {
+  $('tramo').value = '';
+  fillHours();
+  if ($('day').value === '') setTramo(null);
+  else applyHours();
+});
+for (const id of ['hfrom', 'hto']) $(id).addEventListener('change', applyHours);
+$('alltime').addEventListener('click', () => { resetTramoBoxes(); setTramo(null); });
+showTramo();
 
 // ---------- gráficas contra el tiempo ----------
 function syncCards() {
@@ -234,7 +402,8 @@ async function refresh() {
   const names = [...state.selected, ...(altitude ? [altitude] : [])];
   if (!names.length) return;
   const width = Math.round(($('charts').clientWidth || $('alt').clientWidth || 1200) * (window.devicePixelRatio || 1));
-  const query = new URLSearchParams({ id: state.id, zone: state.zone, vars: names.join(',') });
+  const query = withTramo(new URLSearchParams({ id: state.id, zone: state.zone, vars: names.join(',') }));
+  if (compareId()) query.set('compare', compareId());
   fetchWindow(query, state.range, width);
   const ticket = ++pending;
   let data;
@@ -250,12 +419,14 @@ async function refresh() {
 }
 
 function draw(div, name, series, color) {
-  const trace = { type: 'scatter', mode: 'lines', x: series.x.map((ms) => (ms === null ? null : wall(ms))), y: series.y, line: { color, width: 1.4 }, connectgaps: false, name, hovertemplate: '%{y:.4~g}<extra></extra>' };
+  const x = series.x.map((ms) => (ms === null ? null : wall(ms)));
+  const trace = { type: 'scatter', mode: 'lines', x, y: series.y, line: { color, width: 1.4 }, connectgaps: false, name, hovertemplate: (series.compare ? 'Calibrado: ' : '') + '%{y:.4~g}<extra></extra>' };
+  const traces = series.compare ? [{ type: 'scatter', mode: 'lines', x, y: series.compare, line: { color: css('--muted'), width: 1.2, dash: 'dot' }, connectgaps: false, name: 'Sin calibrar', hovertemplate: 'Sin calibrar: %{y:.4~g}<extra></extra>' }, trace] : [trace];
   div._series = series;
-  const layout = { ...baseLayout(), xaxis: timeAxis(), yaxis: yAxis(yRange(series.x, [series.y], state.range)), shapes: div._cursor || [] };
-  Plotly.react(div, [trace], layout, config);
+  const layout = { ...baseLayout(), xaxis: timeAxis(), yaxis: yAxis(yRange(series.x, linesOf(series), state.range)), shapes: div._cursor || [] };
+  Plotly.react(div, traces, layout, config);
   const info = div.closest('.card').querySelector('.card-head .muted');
-  info.textContent = series.shown < series.total ? `${fmt(series.shown)} de ${fmt(series.total)} puntos (acerca para más detalle)` : `${fmt(series.total)} puntos`;
+  info.textContent = (series.shown < series.total ? `${fmt(series.shown)} de ${fmt(series.total)} puntos (acerca para más detalle)` : `${fmt(series.total)} puntos`) + diffText(series.diff);
   if (!div._wired) wire(div);
 }
 
@@ -290,10 +461,16 @@ function wire(div) {
   div.on('plotly_relayout', (event) => {
     const range = rangeFrom(event);
     if (range === undefined) return;
-    state.range = range;
-    follow(div);
+    // Con un tramo elegido las gráficas quedan encerradas en él (como en la versión 1).
+    const kept = keepInside(range);
+    const moved = (kept === null) !== (range === null) || (kept && (kept[0] !== range[0] || kept[1] !== range[1]));
+    state.range = kept;
+    if (moved) {
+      for (const other of plots1()) Plotly.relayout(other, { xaxis: timeAxis() });
+      highlightRoute();
+    } else follow(div);
     // Ajuste inmediato del eje Y con lo ya descargado; los datos con más detalle llegan al detenerse.
-    for (const other of plots1()) if (other._series) Plotly.relayout(other, { yaxis: yAxis(yRange(other._series.x, [other._series.y], state.range)) });
+    for (const other of plots1()) if (other._series) Plotly.relayout(other, { yaxis: yAxis(yRange(other._series.x, linesOf(other._series), state.range)) });
     clearTimeout(zoomTimer);
     zoomTimer = setTimeout(refresh, 150);
   });
@@ -350,6 +527,188 @@ function pinchZoom(div, axes) {
   }, { capture: true });
 }
 
+// ---------- paso 5: Excel (como la versión 1) ----------
+// Variables marcadas, versión en uso (original o calibrada), GPS elegido y todo el archivo o el tramo visible del paso 1.
+// La vista previa muestra las mismas hojas que tendrá el libro: Resumen, Datos, Gráficas y Ruta.
+state.excel = { range: null, sheet: 'Resumen', data: null };
+const SHEETS = ['Resumen', 'Datos', 'Gráficas', 'Ruta'];
+const excelRange = () => (state.excel.range === 'visible' && state.range ? state.range : state.excel.range !== 'all' && state.tramo ? state.tramo.w : null);
+
+function excelQuery() {
+  const query = new URLSearchParams({ id: state.id, zone: state.zone, vars: state.selected.join(','), gps: bothGps() ? 'ambos' : mapGps(),
+    limits: JSON.stringify(limitsMap()) });
+  const range = excelRange();
+  if (range) { query.set('start', range[0]); query.set('end', range[1]); }
+  if (state.excel.range !== 'all' && state.tramo) query.set('tag', state.tramo.tag);
+  return query;
+}
+
+function enterExcel() {
+  const usable = { all: true, tramo: Boolean(state.tramo), visible: Boolean(state.range) };
+  if (!usable[state.excel.range]) state.excel.range = state.range ? 'visible' : state.tramo ? 'tramo' : 'all';
+  for (const b of $('xrange').children) {
+    b.classList.toggle('on', b.dataset.range === state.excel.range);
+    b.disabled = !usable[b.dataset.range];
+  }
+  const range = excelRange();
+  $('xnote').textContent = range ? `${wall(range[0]).slice(0, 19)} → ${wall(range[1]).slice(0, 19)} (${state.zone})`
+    : 'Para exportar solo una parte, elige un tramo o acércate a ella en las gráficas del paso 1.';
+  const gps = !state.info.gps && !state.info.drone ? 'sin GPS' : bothGps() ? 'sensor y dron (la hoja Ruta usa el del dron)' : mapGps() === 'dron' ? 'del dron' : 'del sensor';
+  const version = state.info.cal_id ? ` · ${calMode === 'original' ? 'columnas originales' : 'columnas calibradas'}` : '';
+  $('xwhat').innerHTML = '<b></b> <span class="muted"></span>';
+  $('xwhat').querySelector('b').textContent = state.selected.length ? `${state.selected.length} variable${state.selected.length > 1 ? 's' : ''}: ${state.selected.join(', ')}` : 'Ninguna variable marcada';
+  const limited = Object.keys(limitsMap());
+  const bounds = limited.length ? ` · con los límites del paso 2 en ${limited.join(', ')}` : '';
+  $('xwhat').querySelector('span').textContent = ` · GPS ${gps}${version}${bounds} · hora de ${state.zone}. Se cambian en los pasos 1 y 2 y en la barra de arriba.`;
+  refreshExcel();
+}
+
+$('xrange').addEventListener('click', (event) => {
+  const b = event.target.closest('button');
+  if (!b || b.disabled || b.dataset.range === state.excel.range) return;
+  state.excel.range = b.dataset.range;
+  enterExcel();
+});
+
+let excelTicket = 0;
+async function refreshExcel() {
+  if (!state.id || state.step !== 5) return;
+  const box = $('xlsheet');
+  if (!state.selected.length) {
+    state.excel.data = null;
+    $('xltabs').replaceChildren();
+    $('xfile').textContent = '';
+    box.innerHTML = '<div class="empty-note">Marca una o más variables en el paso 1 para armar el Excel.</div>';
+    return;
+  }
+  const ticket = ++excelTicket;
+  let data;
+  try {
+    data = await api('/api/excel/preview?' + excelQuery());
+  } catch (error) {
+    box.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty-note', textContent: error.message }));
+    return;
+  }
+  if (ticket !== excelTicket) return;
+  state.excel.data = data;
+  $('xfile').textContent = `${data.filename} · ${fmt(data.rows)} filas`;
+  renderExcelSheet();
+}
+
+const cell = (v) => (v === null ? '' : typeof v === 'number' ? v.toLocaleString('es', { maximumFractionDigits: 6 }) : v);
+function tableOf(className, headers, rows) {
+  const table = Object.assign(document.createElement('table'), { className });
+  if (headers) table.createTHead().insertRow().append(...headers.map((h) => Object.assign(document.createElement('th'), { textContent: h })));
+  const body = table.createTBody();
+  for (const row of rows) {
+    const tr = body.insertRow();
+    if (row.more) { Object.assign(tr.insertCell(), { colSpan: headers.length, textContent: row.more }); tr.className = 'more'; continue; }
+    for (const v of row) tr.insertCell().textContent = cell(v);
+  }
+  return table;
+}
+
+function renderExcelSheet() {
+  const data = state.excel.data, box = $('xlsheet');
+  const sheets = SHEETS.filter((s) => s !== 'Ruta' || data.route);
+  if (!sheets.includes(state.excel.sheet)) state.excel.sheet = 'Resumen';
+  $('xltabs').replaceChildren(...sheets.map((name) => {
+    const b = Object.assign(document.createElement('button'), { textContent: name, className: name === state.excel.sheet ? 'on' : '' });
+    b.addEventListener('click', () => { state.excel.sheet = name; renderExcelSheet(); });
+    return b;
+  }));
+  for (const div of box.querySelectorAll('.js-plotly-plot')) Plotly.purge(div);
+  box.replaceChildren();
+  const sheet = state.excel.sheet;
+  if (sheet === 'Resumen') {
+    box.append(Object.assign(document.createElement('p'), { className: 'xltitle', textContent: data.title }),
+      tableOf('xltable xlinfo', null, [['Desde', data.from], ['Hasta', data.to], ['Duración', data.duration], ['Zona horaria', data.zone], ['Muestras', data.rows]]),
+      tableOf('xltable', ['Variable', 'Mínimo', 'Promedio', 'Máximo', 'Muestras válidas'],
+        data.stats.map((s) => [s.name, ...[s.min, s.mean, s.max].map((v) => (v === null ? null : Number(v.toFixed(3)))), s.count])));
+  } else if (sheet === 'Datos') {
+    const hidden = data.rows - data.first.length - data.last.length;
+    const rows = hidden > 0 ? [...data.first, { more: `⋯ ${fmt(hidden)} filas más en el Excel ⋯` }, ...data.last] : [...data.first, ...data.last];
+    box.append(tableOf('xltable', data.headers, rows));
+  } else if (sheet === 'Gráficas') {
+    const grid = Object.assign(document.createElement('div'), { className: 'xlcharts' });
+    box.append(grid);
+    for (const [name, series] of Object.entries(data.charts)) {
+      const div = Object.assign(document.createElement('div'), { className: 'xlchart' });
+      grid.append(div);
+      Plotly.newPlot(div, [{ type: 'scatter', mode: 'lines', x: series.x.map((ms) => (ms === null ? null : wall(ms))), y: series.y, line: { color: PALETTE[Math.max(data.headers.indexOf(name) - 2, 0) % PALETTE.length], width: 1.25 }, connectgaps: false, hovertemplate: '%{y:.4~g}<extra></extra>' }],
+        { ...baseLayout(), margin: { l: 56, r: 12, t: 30, b: 36 }, title: { text: name, font: { size: 13 } }, xaxis: timeAxis(null), yaxis: yAxis(null) },
+        { ...config, displayModeBar: false, scrollZoom: false, staticPlot: false });
+    }
+  } else {
+    const div = Object.assign(document.createElement('div'), { className: 'xlroute' });
+    box.append(div);
+    const lat0 = data.route.lat.find((v) => v !== null) || 0;
+    const axis = { showgrid: true, gridcolor: css('--line'), zeroline: false, tickformat: '.4f', automargin: true };
+    Plotly.newPlot(div, [{ type: 'scatter', mode: 'lines+markers', x: data.route.lon, y: data.route.lat, line: { color: css('--accent'), width: 1.5 }, marker: { size: 3, color: css('--accent') }, hovertemplate: 'Lat %{y:.6f} · Lon %{x:.6f}<extra></extra>' }],
+      { ...baseLayout(), hovermode: 'closest', margin: { l: 70, r: 12, t: 30, b: 40 }, title: { text: `${data.route.name} (sin fondo de mapa)`, font: { size: 13 } },
+        xaxis: { ...axis, title: { text: 'Longitud', font: { size: 11 } } }, yaxis: { ...axis, title: { text: 'Latitud', font: { size: 11 } }, scaleanchor: 'x', scaleratio: 1 / Math.cos(lat0 * Math.PI / 180) } },
+      { ...config, displayModeBar: false });
+  }
+}
+
+// En la APK de Android (WebView) no se pueden bajar enlaces blob:. La app expone window.GasLabAndroid: saveUrl()
+// descarga la URL del servidor local y la guarda en Descargas (avisa al terminar con gaslabSaved), y saveBase64()
+// guarda bytes ya hechos (el PNG del mapa). Devuelve '' o el mensaje de error.
+const android = window.GasLabAndroid || null;
+const androidWaits = {};
+window.gaslabSaved = (id, error, name) => {
+  const wait = androidWaits[id];
+  delete androidWaits[id];
+  if (wait) error ? wait.fail(new Error(error)) : wait.ok(name);
+};
+const androidSaveUrl = (url, fallback) => new Promise((ok, fail) => {
+  const id = `${Date.now()}-${Math.random()}`;
+  androidWaits[id] = { ok, fail };
+  android.saveUrl(id, new URL(url, location.href).href, fallback);
+});
+
+// Descarga con fetch + blob: si el servidor responde un error se muestra como aviso, en lugar de bajar un archivo
+// con el error o dejar la página. El nombre lo da el servidor (Content-Disposition, con acentos).
+async function saveFrom(button, url, what, fallback) {
+  button.disabled = true;
+  toast(`Preparando ${what}…`);
+  try {
+    if (android) return toast(`Guardado en Descargas: ${await androidSaveUrl(url, fallback)}`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error((await response.json()).error || response.statusText);
+    const match = /filename\*=UTF-8''([^;]+)/.exec(response.headers.get('Content-Disposition') || '');
+    const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await response.blob()), download: match ? decodeURIComponent(match[1]) : fallback });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+    toast(`Guardado en Descargas: ${link.download}`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('excel').addEventListener('click', () => {
+  if (!state.id) return;
+  if (!state.selected.length) return toast('Marca al menos una variable para exportar (paso 1).', true);
+  saveFrom($('excel'), '/api/excel?' + excelQuery(), 'el Excel', `${state.info.name}.xlsx`);
+});
+
+// ---------- Google Earth (.kmz): todo lo que tiene mapa, con el tramo, el GPS, la señal y la escala elegidos ----------
+// En «Ambos» la ruta lleva los dos GPS y las muestras usan el del dron, igual que los mapas.
+function kmzQuery(kind, base) {
+  const query = base || withTramo(new URLSearchParams({ id: state.id, zone: state.zone }));
+  query.set('kind', kind);
+  query.set('gps', bothGps() ? 'ambos' : mapGps());
+  if (state.tramo) query.set('tag', state.tramo.tag);
+  return query;
+}
+$('routekmz').addEventListener('click', () => {
+  if (!state.id) return;
+  if (!state.route) return toast('Este archivo no tiene posiciones GPS válidas.', true);
+  saveFrom($('routekmz'), '/api/kmz?' + kmzQuery('route'), 'la ruta para Google Earth', `${state.info.name}_ruta.kmz`);
+});
+
 $('reset').addEventListener('click', () => { state.range = null; highlightRoute(); refresh(); });
 
 // ---------- cursor compartido ----------
@@ -369,13 +728,15 @@ function cursor(ms) {
 // ---------- mapa (solo la ruta, sin fondo) ----------
 async function loadRoute() {
   const map = $('map');
-  let route;
+  const url = (gps) => '/api/route?' + withTramo(new URLSearchParams({ id: state.id, zone: state.zone, gps }));
+  let route, other;
   try {
-    route = await api(`/api/route?id=${state.id}&zone=${encodeURIComponent(state.zone)}`);
+    [route, other] = await Promise.all([api(url(mapGps())), bothGps() ? api(url('sensor')) : null]);
   } catch (error) {
     return toast(error.message, true);
   }
   state.route = route;
+  state.routeOther = other; // en Ambos: la ruta del sensor, dibujada primero (debajo)
   if (!route) {
     $('routeinfo').textContent = '';
     return Plotly.react(map, [], { ...baseLayout(), xaxis: { visible: false }, yaxis: { visible: false }, annotations: [{ text: state.info.gps ? 'No hay coordenadas GPS válidas' : 'Este archivo no tiene columnas de latitud/longitud', showarrow: false, xref: 'paper', yref: 'paper', x: .5, y: .5, font: { color: css('--muted') } }] }, config);
@@ -383,10 +744,12 @@ async function loadRoute() {
   // Índices con punto (sin los cortes) ordenados por tiempo, para encontrar el más cercano a una hora.
   route.points = route.t.map((t, i) => (t === null ? -1 : i)).filter((i) => i >= 0);
   const first = route.points[0], last = route.points[route.points.length - 1];
-  const hover = route.alt ? '%{customdata[0]}<br>Lat %{y:.6f} · Lon %{x:.6f}<br>Altura %{customdata[1]:.1f} m<extra></extra>' : '%{customdata[0]}<br>Lat %{y:.6f} · Lon %{x:.6f}<extra></extra>';
-  const customdata = route.t.map((t, i) => [t === null ? '' : wall(t).slice(0, 19), route.alt ? route.alt[i] : null]);
+  const hoverOf = (r, label) => label + (r.alt ? '%{customdata[0]}<br>Lat %{y:.6f} · Lon %{x:.6f}<br>Altura %{customdata[1]:.1f} m<extra></extra>' : '%{customdata[0]}<br>Lat %{y:.6f} · Lon %{x:.6f}<extra></extra>');
+  const dataOf = (r) => r.t.map((t, i) => [t === null ? '' : wall(t).slice(0, 19), r.alt ? r.alt[i] : null]);
+  const both = Boolean(other);
   const traces = [
-    { type: 'scatter', mode: 'lines', x: route.lon, y: route.lat, customdata, line: { color: css('--route'), width: 2 }, hovertemplate: hover },
+    ...(both ? [{ type: 'scatter', mode: 'lines', x: other.lon, y: other.lat, customdata: dataOf(other), line: { color: css('--muted'), width: 1.5, dash: 'dot' }, hovertemplate: hoverOf(other, 'GPS sensor<br>') }] : []),
+    { type: 'scatter', mode: 'lines', x: route.lon, y: route.lat, customdata: dataOf(route), line: { color: css('--route'), width: 2 }, hovertemplate: hoverOf(route, both ? 'GPS dron<br>' : '') },
     { type: 'scatter', mode: 'lines', x: [], y: [], line: { color: css('--accent'), width: 3 }, hoverinfo: 'skip' },
     { type: 'scatter', mode: 'markers+text', x: [route.lon[first], route.lon[last]], y: [route.lat[first], route.lat[last]], text: ['Inicio', 'Fin'], textposition: 'top center', marker: { size: 9, color: ['#1a9850', '#d73027'], line: { color: '#fff', width: 1.5 } }, hoverinfo: 'skip' },
     { type: 'scatter', mode: 'markers', x: [], y: [], marker: { size: 13, color: 'rgba(0,0,0,0)', line: { color: css('--text'), width: 2.5 } }, hoverinfo: 'skip' },
@@ -398,12 +761,19 @@ async function loadRoute() {
     // Misma escala en metros en ambos ejes: un grado de longitud mide cos(latitud) veces un grado de latitud.
     yaxis: { ...axis, title: { text: 'Latitud', font: { size: 11 } }, scaleanchor: 'x', scaleratio: 1 / Math.cos(route.lat0 * Math.PI / 180) },
   };
+  state.routeBase = both ? 1 : 0; // índice de la ruta principal; después van el tramo resaltado, Inicio/Fin y el cursor
   await Plotly.react(map, traces, layout, config);
-  $('routeinfo').textContent = `${fmt(route.points.length)} puntos GPS`;
+  const gap = state.info.drone && state.info.drone.gap;
+  $('routeinfo').textContent = `${fmt(route.points.length)} puntos GPS${mapGps() === 'dron' ? ' del dron' : ''}`
+    + (both && gap ? ` · distancia sensor–dron: mediana ${meters(gap.median)}, promedio ${meters(gap.mean)}, máx ${meters(gap.max)}` : '');
   highlightRoute();
   if (!map._wired) {
     map._wired = 'map';
-    map.on('plotly_hover', (event) => { const t = state.route && state.route.t[event.points[0].pointIndex]; if (t !== null && t !== undefined) cursor(t); });
+    map.on('plotly_hover', (event) => {
+      const point = event.points[0], r = point.curveNumber === state.routeBase ? state.route : state.routeOther;
+      const t = r && point.curveNumber <= state.routeBase && r.t[point.pointIndex];
+      if (t !== null && t !== undefined && t !== false) cursor(t);
+    });
     map.on('plotly_unhover', () => cursor(null));
     pinchZoom(map, ['x', 'y']);
   }
@@ -412,24 +782,24 @@ async function loadRoute() {
 // Tramo con zoom resaltado en la ruta.
 function highlightRoute() {
   const route = state.route;
-  if (!route) return;
+  if (!route || !route.points) return;
   const inside = (t) => t !== null && (!state.range || (t >= state.range[0] && t <= state.range[1]));
   const lon = route.lon.map((v, i) => (inside(route.t[i]) ? v : null));
   const lat = route.lat.map((v, i) => (inside(route.t[i]) ? v : null));
-  Plotly.restyle($('map'), { x: [lon], y: [lat] }, [1]);
+  Plotly.restyle($('map'), { x: [lon], y: [lat] }, [state.routeBase + 1]);
 }
 
 function markOnMap(ms) {
   const route = state.route;
   if (!route || !route.points.length) return;
-  if (ms === null) return Plotly.restyle($('map'), { x: [[]], y: [[]] }, [3]);
+  if (ms === null) return Plotly.restyle($('map'), { x: [[]], y: [[]] }, [state.routeBase + 3]);
   // Búsqueda binaria del punto GPS más cercano a esa hora.
   const points = route.points;
   let lo = 0, hi = points.length - 1;
   while (lo < hi) { const mid = (lo + hi) >> 1; if (route.t[points[mid]] < ms) lo = mid + 1; else hi = mid; }
   if (lo > 0 && Math.abs(route.t[points[lo - 1]] - ms) < Math.abs(route.t[points[lo]] - ms)) lo -= 1;
   const i = points[lo];
-  Plotly.restyle($('map'), { x: [[route.lon[i]]], y: [[route.lat[i]]] }, [3]);
+  Plotly.restyle($('map'), { x: [[route.lon[i]]], y: [[route.lat[i]]] }, [state.routeBase + 3]);
 }
 
 // ---------- pestañas (pasos del análisis) ----------
@@ -440,6 +810,7 @@ function showStep(step) {
   $('step2').hidden = step !== 2;
   $('step3').hidden = step !== 3;
   $('step4').hidden = step !== 4;
+  $('step5').hidden = step !== 5;
   if (step === 1) {
     // La selección pudo cambiar en el paso 2; las gráficas dibujadas con la pestaña oculta quedaron sin tamaño.
     renderVariables();
@@ -452,6 +823,8 @@ function showStep(step) {
     enterHeat();
   } else if (step === 4) {
     enterTerrain();
+  } else if (step === 5) {
+    enterExcel();
   }
 }
 
@@ -569,7 +942,8 @@ async function refreshBig() {
     return;
   }
   const limits = limitsMap();
-  const query = new URLSearchParams({ id: state.id, zone: state.zone, vars: name, limits: JSON.stringify(limits), original: $('compare').checked ? '1' : '0' });
+  const query = withTramo(new URLSearchParams({ id: state.id, zone: state.zone, vars: name, limits: JSON.stringify(limits), original: $('compare').checked ? '1' : '0' }));
+  if (compareId()) query.set('compare', compareId());
   fetchWindow(query, state.range2, Math.round((div.clientWidth || 1200) * (window.devicePixelRatio || 1)));
   const ticket = ++bigPending;
   let data;
@@ -581,8 +955,9 @@ async function refreshBig() {
   if (ticket !== bigPending || !data) return;
   const x = data.x.map((ms) => (ms === null ? null : wall(ms)));
   const traces = [];
+  if (data.compare) traces.push({ type: 'scatter', mode: 'lines', x, y: data.compare, name: 'Sin calibrar', line: { color: css('--muted'), width: 1.2, dash: 'dot' }, hovertemplate: 'Sin calibrar: %{y:.4~g}<extra></extra>' });
   if (data.original) traces.push({ type: 'scatter', mode: 'lines', x, y: data.original, name: 'Original', line: { color: css('--route'), width: 1.4 }, hovertemplate: 'Original: %{y:.4~g}<extra></extra>' });
-  traces.push({ type: 'scatter', mode: 'lines', x, y: data.y, name: data.limits ? 'Ajustada' : name, line: { color: colorOf(name), width: 1.6 }, hovertemplate: (data.limits ? 'Ajustada: ' : '') + '%{y:.4~g}<extra></extra>' });
+  traces.push({ type: 'scatter', mode: 'lines', x, y: data.y, name: data.limits ? 'Ajustada' : data.compare ? 'Calibrado' : name, line: { color: colorOf(name), width: 1.6 }, hovertemplate: (data.limits ? 'Ajustada: ' : '') + '%{y:.4~g}<extra></extra>' });
   // Líneas punteadas en los límites.
   const shapes = [], annotations = [];
   (data.limits || []).forEach((value, i) => {
@@ -592,10 +967,10 @@ async function refreshBig() {
     annotations.push({ xref: 'paper', x: 1, y: value, text: `${label} ${value.toLocaleString('es')}`, showarrow: false, xanchor: 'right', yanchor: i ? 'bottom' : 'top', font: { size: 11, color: css('--error') } });
   });
   const layout = { ...baseLayout(), margin: { l: 64, r: 12, t: 8, b: 34 }, showlegend: traces.length > 1, legend: { orientation: 'h', x: 0, y: 1.06 },
-    xaxis: timeAxis(state.range2), yaxis: yAxis(yRange(data.x, data.original ? [data.y, data.original] : [data.y], state.range2)), shapes, annotations };
+    xaxis: timeAxis(state.range2), yaxis: yAxis(yRange(data.x, linesOf(data, ...(data.original ? [data.original] : [])), state.range2)), shapes, annotations };
   div._series = data;
   await Plotly.react(div, traces, layout, config);
-  $('biginfo').textContent = `${data.shown < data.total ? `${fmt(data.shown)} de ${fmt(data.total)}` : fmt(data.total)} puntos · hora del día (${state.zone})`;
+  $('biginfo').textContent = `${data.shown < data.total ? `${fmt(data.shown)} de ${fmt(data.total)}` : fmt(data.total)} puntos · hora del día (${state.zone})${diffText(data.diff)}`;
   $('bigstats').textContent = data.limits
     ? `Ajustadas: ${fmt(data.above)} al máximo y ${fmt(data.below)} al mínimo, de ${fmt(data.valid)} muestras (${((data.above + data.below) / Math.max(data.valid, 1) * 100).toLocaleString('es', { maximumFractionDigits: 1 })} %).`
     : 'Sin límites para esta variable: se muestra el dato original.';
@@ -606,7 +981,7 @@ async function refreshBig() {
       if (range === undefined) return;
       state.range2 = range;
       const data = div._series;
-      if (data) Plotly.relayout(div, { yaxis: yAxis(yRange(data.x, data.original ? [data.y, data.original] : [data.y], range)) });
+      if (data) Plotly.relayout(div, { yaxis: yAxis(yRange(data.x, linesOf(data, ...(data.original ? [data.original] : [])), range)) });
       scheduleBig();
     });
     pinchZoom(div, ['x']);
@@ -636,15 +1011,56 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && $('bigcard').classList.contains('full')) setFallbackFull(false);
 });
 
+// Valor al pasar el mouse: a lo sumo una consulta por cuadro y ninguna mientras el mapa se mueve o gira (consultar
+// miles de prismas en cada movimiento del mouse es lo que más trababa el 3D). Un toque (tableta) llega como 'click'.
+function hoverValues(map, show, hide) {
+  let frame = null, last = null;
+  map.on('mousemove', (event) => {
+    last = event;
+    if (frame || map.isMoving()) return;
+    frame = requestAnimationFrame(() => { frame = null; show(last); });
+  });
+  map.on('click', show);
+  map.on('mouseout', () => { cancelAnimationFrame(frame); frame = null; hide(); });
+  map.on('movestart', hide);
+}
+
+// Cambiar una altura que depende de cada prisma obliga a MapLibre a reprocesar todos (cientos de ms con miles). Al
+// arrastrar un deslizador esos cambios se encolaban y la vista quedaba trabada. Con esto, mientras el mapa procesa
+// un cambio los siguientes se juntan y solo se aplica el último cuando termina.
+function latestOnly(map) {
+  let busy = false, next = null;
+  const run = (fn) => {
+    if (busy) { next = fn; return; }
+    busy = true;
+    fn();
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      busy = false;
+      if (next) { const again = next; next = null; run(again); }
+    };
+    map.once('idle', done);
+    setTimeout(done, 1500); // por si el mapa no queda quieto (teselas cargando)
+  };
+  return run;
+}
+
 // ---------- paso 3: mapa de calor (una sola señal) ----------
 const SATELLITE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 let hmap = null, hpopup = null;
 const num = (v) => Number(v).toLocaleString('es', { maximumFractionDigits: Math.abs(v) >= 100 ? 1 : Math.abs(v) >= 1 ? 2 : 4 });
 
 // Escala (divisiones) y apariencia de la nube; la imagen se pide solo para la zona visible del mapa.
+const heatSpacing = () => $('hspacing').querySelector('.on')?.dataset.spacing || 'original';
+// Al elegir una escala, el % mínimo vuelve a su valor inicial: 5 % en «Original» (igual que antes), 0 % en las demás.
+const syncMinPct = () => { $('hmin').value = heatSpacing() === 'original' ? 5 : 0; };
+syncMinPct();
 function heatQuery(look = false) {
-  const query = new URLSearchParams({ id: state.id, var: state.heat.name, limits: JSON.stringify(limitsMap()), bins: $('hbins').value || 20, minpct: $('hmin').value || 0 });
-  if (look) { query.set('size', $('hsize').value); query.set('opacity', $('hop').value / 100); query.set('cool', $('hcool').value); query.set('reach', $('hreach').value); }
+  const query = new URLSearchParams({ id: state.id, var: state.heat.name, limits: JSON.stringify(limitsMap()), bins: $('hbins').value || 20, minpct: $('hmin').value || 0, spacing: heatSpacing(), gps: mapGps(), zone: state.zone });
+  withTramo(query);
+  if (look) { query.set('size', $('hsize').value); query.set('opacity', $('hop').value / 100); query.set('cool', $('hcool').value); query.set('reach', $('hreach').value / $('hsize').value); } // alcance en veces el tamaño
   return query;
 }
 
@@ -674,7 +1090,7 @@ function showOutputs() {
   $('hsize').nextElementSibling.textContent = `${num($('hsize').value)} m`;
   $('hop').nextElementSibling.textContent = `${$('hop').value} %`;
   $('hcool').nextElementSibling.textContent = Number($('hcool').value) ? num($('hcool').value) : 'no';
-  $('hreach').nextElementSibling.textContent = `${num($('hreach').value)}× (${num($('hreach').value * $('hsize').value)} m)`;
+  $('hreach').nextElementSibling.textContent = `${num($('hreach').value)} m (${num($('hreach').value / $('hsize').value)}×)`;
   $('hheight').nextElementSibling.textContent = `${$('hheight').value} m`;
   $('hwidth').nextElementSibling.textContent = `${num($('hwidth').value)} m`;
 }
@@ -703,9 +1119,7 @@ function createHeatMap() {
     const { v, k } = feature.properties, c = state.heat.data.classes[k];
     hpopup.setLngLat(event.lngLat).setHTML(`<b>${num(v)}</b> ${state.heat.name}<br><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${c.color}"></i> división ${num(c.lo)} – ${num(c.hi)}`).addTo(hmap);
   };
-  hmap.on('mousemove', showValue);
-  hmap.on('click', showValue);
-  hmap.on('mouseout', () => hpopup.remove());
+  hoverValues(hmap, showValue, () => hpopup.remove());
   hmap.on('moveend', () => { if (state.heat.view === '2d') scheduleCloud(); });
 }
 
@@ -779,7 +1193,7 @@ function drawHeat(data) {
   }
   drawBars();
   setHeatView(state.heat.view, false);
-  const key = `${state.id}|${data.name}`;
+  const key = `${state.info.id}|${data.name}|${mapGps()}`; // mismo encuadre para original y calibrado
   if (state.heat.fitted !== key) {
     state.heat.fitted = key;
     const [west, south, east, north] = data.bounds;
@@ -794,30 +1208,42 @@ function classIndex(v, classes) {
 }
 
 // 3D: una barra por muestra, altura proporcional al valor y color de su división.
+// Las barras se arman solo en 3D (en 2D quedan pendientes) y solo cuando cambian los datos o el ancho. La altura
+// es una expresión del mapa sobre r (0 a 1): mover «Altura máxima» no rearma nada.
+let barsDirty = true;
+const barHeight = () => ['+', 0.5, ['*', ['get', 'r'], Number($('hheight').value)]];
 function drawBars() {
   const data = state.heat.data;
   if (!data || !hmap.getSource('muestras')) return;
-  const height = Number($('hheight').value), half = Number($('hwidth').value) / 2, span = data.max - data.min || 1;
-  const features = data.points.v.map((v, i) => {
-    const lon = data.points.lon[i], lat = data.points.lat[i], k = classIndex(v, data.classes);
-    const dy = half / 111320, dx = half / (111320 * Math.cos(lat * Math.PI / 180));
-    return { type: 'Feature', properties: { v, k, c: data.classes[k].color, h: 0.5 + ((v - data.min) / span) * height },
+  if (state.heat.view !== '3d') { barsDirty = true; return; }
+  barsDirty = false;
+  const half = Number($('hwidth').value) / 2, span = data.max - data.min || 1, p = data.points;
+  const dy = half / 111320, features = new Array(p.v.length);
+  for (let i = 0; i < p.v.length; i++) {
+    const v = p.v[i], lon = p.lon[i], lat = p.lat[i], k = classIndex(v, data.classes);
+    const dx = half / (111320 * Math.cos(lat * Math.PI / 180));
+    features[i] = { type: 'Feature', properties: { v, k, c: data.classes[k].color, r: (v - data.min) / span },
       geometry: { type: 'Polygon', coordinates: [[[lon - dx, lat - dy], [lon + dx, lat - dy], [lon + dx, lat + dy], [lon - dx, lat + dy], [lon - dx, lat - dy]]] } };
-  });
+  }
   const collection = { type: 'FeatureCollection', features };
   if (hmap.getSource('barras')) hmap.getSource('barras').setData(collection);
   else {
     hmap.addSource('barras', { type: 'geojson', data: collection });
-    hmap.addLayer({ id: 'barras', type: 'fill-extrusion', source: 'barras', layout: { visibility: 'none' },
-      paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-height': ['get', 'h'], 'fill-extrusion-opacity': 0.95 } });
+    hmap.addLayer({ id: 'barras', type: 'fill-extrusion', source: 'barras',
+      paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-height': barHeight(), 'fill-extrusion-opacity': 0.95 } });
   }
 }
+let barsTimer = null;
+const scheduleBars = () => { clearTimeout(barsTimer); barsTimer = setTimeout(drawBars, 120); };
 
 function setHeatView(view, animate = true) {
   state.heat.view = view;
   for (const button of $('hview').children) button.classList.toggle('on', button.dataset.view === view);
   for (const row of document.querySelectorAll('.cfg-row[data-view]')) row.hidden = row.dataset.view !== view;
   if (!hmap || !hmap.getLayer('muestras')) return;
+  if (view === '3d' && barsDirty) drawBars();
+  // La capa de muestras (invisible) solo sirve para leer valores en 2D; en 3D se apaga para no dibujarla.
+  hmap.setLayoutProperty('muestras', 'visibility', view === '2d' ? 'visible' : 'none');
   if (hmap.getLayer('nube')) hmap.setLayoutProperty('nube', 'visibility', view === '2d' ? 'visible' : 'none');
   if (view === '2d' && animate) scheduleCloud();
   if (hmap.getLayer('barras')) hmap.setLayoutProperty('barras', 'visibility', view === '3d' ? 'visible' : 'none');
@@ -828,8 +1254,21 @@ function setHeatView(view, animate = true) {
 $('hvar').addEventListener('change', () => { state.heat.name = $('hvar').value; refreshHeat(); });
 $('hview').addEventListener('click', (event) => { const b = event.target.closest('button'); if (b) setHeatView(b.dataset.view); });
 for (const id of ['hbins', 'hmin']) $(id).addEventListener('input', scheduleHeat);
+$('hspacing').addEventListener('click', (event) => {
+  const b = event.target.closest('button');
+  if (!b || b.classList.contains('on')) return;
+  for (const x of $('hspacing').children) x.classList.toggle('on', x === b);
+  syncMinPct();
+  scheduleHeat();
+});
 for (const id of ['hsize', 'hop', 'hcool', 'hreach']) $(id).addEventListener('input', () => { showOutputs(); scheduleCloud(); });
-for (const id of ['hheight', 'hwidth']) $(id).addEventListener('input', () => { showOutputs(); drawBars(); });
+let barsPaint = null;
+$('hheight').addEventListener('input', () => {
+  showOutputs();
+  if (!hmap || !hmap.getLayer('barras')) return;
+  (barsPaint ||= latestOnly(hmap))(() => hmap.setPaintProperty('barras', 'fill-extrusion-height', barHeight()));
+});
+$('hwidth').addEventListener('input', () => { showOutputs(); scheduleBars(); });
 
 // Guardar: imagen de lo que se ve (con la leyenda) o carpeta para QGIS.
 $('hpng').addEventListener('click', () => {
@@ -858,14 +1297,38 @@ $('hpng').addEventListener('click', () => {
       ctx.fillStyle = '#fff';
       ctx.fillText(`${num(c.lo)} – ${num(c.hi)}  ${c.pct.toFixed(1)} %`, x + pad + 22, ty + 15);
     });
+    const name = `${state.info.name}_${data.name}_${state.heat.view}.png`;
+    if (android) {
+      const error = android.saveBase64(name, 'image/png', canvas.toDataURL('image/png').split(',')[1]);
+      return error ? toast(error, true) : toast(`Guardado en Descargas: ${name}`);
+    }
     canvas.toBlob((blob) => {
       if (!blob) return toast('No se pudo crear la imagen.', true);
-      const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `${state.info.name}_${data.name}_${state.heat.view}.png` });
+      const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
       link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 2000);
     }, 'image/png');
   });
   hmap.triggerRepaint();
+});
+
+// Lo que se ve: en 2D la nube, en 3D las barras (con su altura máxima y ancho); siempre con la leyenda y la ruta.
+$('hkmz').addEventListener('click', () => {
+  if (!state.heat.data) return;
+  const bars = state.heat.view === '3d';
+  const query = kmzQuery(bars ? 'bars' : 'heat', heatQuery(true));
+  query.set('barh', $('hheight').value);
+  query.set('barw', $('hwidth').value);
+  saveFrom($('hkmz'), '/api/kmz?' + query, bars ? 'las barras 3D para Google Earth' : 'la nube para Google Earth',
+    `${state.info.name}_${state.heat.name}${bars ? '_barras3d' : ''}.kmz`);
+});
+
+$('tkmz').addEventListener('click', () => {
+  if (!state.terrain.data) return;
+  const query = kmzQuery('terrain', heatQuery());
+  query.set('mode', glued() ? 'ground' : 'measured');
+  query.set('offset', terrainOffset());
+  saveFrom($('tkmz'), '/api/kmz?' + query, 'los puntos 3D para Google Earth', `${state.info.name}_${state.heat.name}_3d.kmz`);
 });
 
 $('hzip').addEventListener('click', () => {
@@ -876,10 +1339,12 @@ $('hzip').addEventListener('click', () => {
 
 // Ventanita de ayuda (botones ⓘ).
 const INFO = {
-  bins: ['Divisiones iniciales', 'El rango entre el valor mínimo y el máximo registrados se parte en esta cantidad de divisiones del mismo ancho. Es el punto de partida de la escala de colores: después se unen las que tengan pocas muestras. Más divisiones iniciales = la escala puede afinar más donde hay muchas muestras.'],
-  minpct: ['% mínimo por división', 'Cada división debe tener al menos este porcentaje de las muestras para ser relevante. Si tiene menos, se une a su vecina (la que tenga menos muestras), hasta que todas lleguen al mínimo. Así quedan más divisiones, más colores, donde se concentran las muestras y menos donde hay pocas. Con 0 % no se une ninguna. La tabla de la derecha muestra el % que quedó en cada división.'],
-  cool: ['Enfriamiento', 'Cada muestra tiene su color real en el centro y se va "enfriando" hacia los lados: su valor baja hacia el mínimo de la escala (azul) a medida que se aleja del punto medido. Este control es la rapidez: más alto = se enfría más cerca del centro; 0 = mantiene su color hasta el borde de la nube (solo se vuelve transparente). Con 1, a una distancia igual al Tamaño queda a un 60 % de su valor sobre el mínimo.'],
-  reach: ['Alcance', 'Hasta dónde llega la nube de cada muestra, en veces el Tamaño (entre paréntesis, en metros). Más allá no se pinta nada, para no inventar datos lejos de lo medido. Alargarlo estira el borde que se desvanece, pero no cambia el centro ni el enfriamiento, que dependen del Tamaño: con enfriamiento, lo que se agrega llega en tonos fríos. Por defecto 2,5 veces; como máximo 4.'],
+  bins: ['Divisiones iniciales', 'El rango entre el valor mínimo y el máximo registrados se parte en esta cantidad de divisiones: del mismo ancho en Lineal, cada vez más anchas en Exponencial. Es el punto de partida de la escala de colores: después se unen las que tengan pocas muestras. Más divisiones iniciales = la escala puede afinar más donde hay muchas muestras.'],
+  spacing: ['Original, lineal o exponencial', 'Cómo se parte el rango en divisiones de color. Original (por defecto): la escala de siempre: divisiones del mismo ancho y las que tienen menos del % mínimo de las muestras se unen a su vecina; al elegirla, el % mínimo se pone en 5 %, como antes, y se puede cambiar. Lineal: todas del mismo ancho; al elegirla (o Exponencial), el % mínimo vuelve a 0 %. Exponencial: cada división es más ancha que la anterior por un factor fijo, finas cerca del mínimo y anchas hacia el máximo (la última es 1000 veces más ancha que la primera). Sirve cuando la mayoría de las muestras están cerca del fondo y unas pocas suben mucho: se distinguen mejor las variaciones pequeñas sin perder los picos. Con el % mínimo en 0 % las divisiones se quedan tal cual; con más, se unen las que tengan pocas muestras.'],
+  minpct: ['% mínimo por división', 'Cada división debe tener al menos este porcentaje de las muestras para ser relevante. Si tiene menos, se une a su vecina (la que tenga menos muestras), hasta que todas lleguen al mínimo. Así quedan más divisiones, más colores, donde se concentran las muestras y menos donde hay pocas. Con 0 % (el valor por defecto) no se une ninguna: en Lineal todas las divisiones quedan del mismo ancho. La tabla de la derecha muestra el % que quedó en cada división.'],
+  cool: ['Enfriamiento', 'Decide el tamaño de la zona de calor. Cada muestra tiene su color real en el centro y se va "enfriando" hacia los lados: su valor baja hacia el mínimo de la escala (azul) según la distancia en metros. Con 1, a 10 m queda a un 60 % de su valor sobre el mínimo y a 25 m casi en el mínimo; más alto = zona de calor más chica (con 4, el 60 % queda a 5 m); más bajo = más grande; 0 = el mismo color hasta el borde. No depende del Alcance. Va de 0 a 10.'],
+  reach: ['Alcance', 'Hasta dónde se extiende la nube de cada muestra, en metros (entre paréntesis, en veces el Tamaño). Solo cambia cuánto se extiende: los colores y la opacidad del centro no cambian. La mitad interior es opaca y la exterior se desvanece hasta el borde. Más allá no se pinta nada. Por defecto 30 m; como máximo 50 m.'],
+  offset: ['Desfase de altura', 'Metros que se suman a la altura de cada muestra (negativo = se restan). Sirve para corregir un GPS o barómetro que mide con un error fijo, o para separar los puntos del relieve. Con «Pegada al terreno», los puntos van sobre el relieve y el desfase es su altura sobre él. Escribe cualquier valor en el número; la barra lo ajusta ±5 m y al soltarla se recentra en el nuevo valor.'],
 };
 function closeInfo() {
   $('infopop').hidden = true;
@@ -918,7 +1383,10 @@ function enterTerrain() {
 
 function createTerrainMap() {
   tmap = new maplibregl.Map({
-    container: 'tmap', maxZoom: 20, maxPitch: 85, center: [0, 0], zoom: 1, attributionControl: { compact: true },
+    // Con relieve, el costo de cada cuadro crece con los píxeles: en pantallas con escala de Windows de 150-200 % se
+    // dibujaba 2-4 veces más de lo necesario (medido: 432 ms por cuadro a 2×, 243 ms a 1×). La imagen satelital ya es
+    // borrosa de cerca, así que se dibuja a 1×.
+    container: 'tmap', maxZoom: 20, maxPitch: 85, center: [0, 0], zoom: 1, attributionControl: { compact: true }, pixelRatio: Math.min(window.devicePixelRatio || 1, 1),
     style: {
       version: 8,
       sources: {
@@ -939,14 +1407,16 @@ function createTerrainMap() {
   const showValue = (event) => { // al pasar el mouse o al tocar (tableta)
     const feature = tmap.getLayer('puntos3d') && tmap.queryRenderedFeatures(event.point, { layers: ['puntos3d'] })[0];
     if (!feature) return tpopup.remove();
-    const p = feature.properties, c = state.terrain.data.classes[p.k];
-    tpopup.setLngLat(event.lngLat).setHTML(`<b>${num(p.v)}</b> ${state.terrain.data.name} <i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${c.color}"></i><br>`
-      + `Altura medida: ${num(p.alt)} m<br>Terreno: ${num(p.ground)} m<br>Sobre el terreno: <b>${num(p.above)} m</b>`).addTo(tmap);
+    const p = feature.properties, c = state.terrain.data.classes[p.k], off = terrainOffset();
+    const ground = p.ground !== undefined && p.ground !== null ? `<br>Terreno: ${num(p.ground)} m` : '';
+    const height = glued() ? `Pegada al terreno${off > 0 ? `, ${num(off)} m sobre él` : ''}${ground}`
+      : `Altura${off ? ' (con desfase)' : ' medida'}: ${num(p.alt + off)} m${ground}<br>Sobre el terreno: <b>${num(Math.max(p.alt + off - p.ground, 0))} m</b>`;
+    tpopup.setLngLat(event.lngLat).setHTML(`<b>${num(p.v)}</b> ${state.terrain.data.name} <i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${c.color}"></i><br>${height}`).addTo(tmap);
   };
-  tmap.on('mousemove', showValue);
-  tmap.on('click', showValue);
-  tmap.on('mouseout', () => tpopup.remove());
-  tmap.on('zoomend', drawPoints3d); // los puntos se ven del mismo tamaño en pantalla con cualquier zoom
+  hoverValues(tmap, showValue, () => tpopup.remove());
+  // Los cubos se ven de un tamaño parecido en pantalla con cualquier zoom: se rearman solo si el zoom cambió medio
+  // nivel o más desde la última vez (antes, con cada zoom).
+  tmap.on('zoomend', () => { if (Math.abs(tmap.getZoom() - (state.terrain.zoom ?? -99)) >= 0.5) drawPoints3d(); });
 }
 
 let terrainTicket = 0;
@@ -971,15 +1441,10 @@ async function refreshTerrain() {
   if (ticket !== terrainTicket) return;
   state.terrain.data = data;
   renderHeatTable(data, 't');
-  const notes = [`Altura de cada muestra: columna «${data.altitude}» (sobre el nivel del mar).`];
-  if (data.under.count) notes.push(`${fmt(data.under.count)} muestras quedaron hasta ${num(data.under.max)} m bajo el relieve (precisión del GPS y del relieve, ~30 m); se dibujan sobre el suelo.`);
-  if (data.no_alt) notes.push(`${fmt(data.no_alt)} muestras sin altura no se dibujan.`);
-  note.hidden = false;
-  note.className = 'tnote' + (data.under.count ? ' warn' : '');
-  note.textContent = notes.join(' ');
+  showTerrainMode();
   await tmap._ready;
   drawPoints3d();
-  const key = `${state.id}|${data.name}`;
+  const key = `${state.info.id}|${data.name}|${mapGps()}`;
   if (state.terrain.fitted !== key) {
     state.terrain.fitted = key;
     const [west, south, east, north] = data.bounds;
@@ -992,31 +1457,133 @@ async function refreshTerrain() {
   }
 }
 
-// Cubos que flotan a la altura medida (fill-extrusion: base y altura se cuentan desde el relieve).
+// Altura: Medida (la del archivo más el desfase) o Pegada al terreno (el desfase sobre el relieve). Sin columna de
+// altura solo se puede pegar al terreno. Todo se calcula en la página: cambiarlo no vuelve a pedir datos.
+state.terrain.mode = 'measured';
+const terrainOffset = () => Number(String($('toffset').value).replace(',', '.')) || 0;
+const glued = () => state.terrain.mode === 'ground' || !(state.terrain.data && state.terrain.data.altitude);
+
+function showTerrainMode() {
+  const data = state.terrain.data;
+  if (!data) return;
+  for (const b of $('tmode').children) {
+    b.classList.toggle('on', b.dataset.mode === (glued() ? 'ground' : 'measured'));
+    b.disabled = b.dataset.mode === 'measured' && !data.altitude;
+  }
+  const off = terrainOffset(), p = data.points, note = $('tnote'), notes = [];
+  let under = 0, deepest = 0, noAlt = 0;
+  if (glued()) {
+    notes.push(!data.altitude ? 'Este archivo no tiene columna de altura: las muestras van pegadas al terreno.' : 'Muestras pegadas al terreno.');
+    if (off > 0) notes.push(`Dibujadas ${num(off)} m sobre el relieve.`);
+    if (off < 0) notes.push('Pegadas al terreno no pueden ir debajo de él: el desfase negativo no se usa.');
+  } else {
+    notes.push(`Altura de cada muestra: columna «${data.altitude}» (sobre el nivel del mar)${off ? `, ${off > 0 ? 'más' : 'menos'} ${num(Math.abs(off))} m de desfase` : ''}.`);
+    p.v.forEach((v, i) => {
+      if (p.alt[i] === null) { noAlt++; return; }
+      const above = p.alt[i] + off - p.ground[i];
+      if (p.ground[i] !== null && above < 0) { under++; deepest = Math.max(deepest, -above); }
+    });
+    if (under) notes.push(`${fmt(under)} muestras quedaron hasta ${num(deepest)} m bajo el relieve (precisión del GPS y del relieve, ~30 m); se dibujan sobre el suelo. Un desfase positivo las sube.`);
+    if (noAlt) notes.push(`${fmt(noAlt)} muestras sin altura no se dibujan.`);
+  }
+  note.hidden = false;
+  note.className = 'tnote' + (under ? ' warn' : '');
+  note.textContent = notes.join(' ');
+}
+
+$('tmode').addEventListener('click', (event) => {
+  const b = event.target.closest('button');
+  if (!b || b.disabled) return;
+  state.terrain.mode = b.dataset.mode;
+  showTerrainMode();
+  terrainPaint();
+});
+// Desfase: deslizador (−100 a 100 m) y campo para un valor exacto o fuera de ese rango; los dos van juntos.
+// El número manda (sin límite); la barra es un ajuste fino de ±5 m alrededor del número y se recentra al soltarla.
+const OFFSET_FINE = 5;
+function centerOffsetBar() {
+  const v = terrainOffset(), bar = $('toffsetr');
+  bar.min = v - OFFSET_FINE; bar.max = v + OFFSET_FINE; bar.value = v;
+}
+$('toffset').addEventListener('input', () => { centerOffsetBar(); showTerrainMode(); terrainPaint(); });
+$('toffsetr').addEventListener('input', () => { $('toffset').value = Math.round(Number($('toffsetr').value) * 10) / 10; showTerrainMode(); terrainPaint(); });
+$('toffsetr').addEventListener('change', centerOffsetBar);
+
+// Cubos a la altura medida o pegados al relieve (fill-extrusion: base y altura se cuentan desde el relieve).
+// La geometría (posición y tamaño) se arma con los datos y al cambiar el zoom; la altura sale de una expresión del
+// mapa con el desfase y el modo, así mover el desfase o cambiar de modo no rearma los miles de cubos.
+let terrainLatest = null, terrainFilter = null;
+function terrainPaint() {
+  if (!tmap || !tmap.getLayer('puntos3d')) return;
+  (terrainLatest ||= latestOnly(tmap))(() => {
+    const off = terrainOffset(), side = state.terrain.side;
+    const base = glued() ? Math.max(off, 0) : ['max', ['+', ['-', ['get', 'alt'], ['get', 'ground']], off], 0];
+    if (terrainFilter !== glued()) { // el filtro también obliga a reprocesar: solo si cambió el modo
+      terrainFilter = glued();
+      tmap.setFilter('puntos3d', glued() ? null : ['all', ['has', 'alt'], ['has', 'ground']]); // sin altura no se dibuja
+    }
+    tmap.setPaintProperty('puntos3d', 'fill-extrusion-base', base);
+    tmap.setPaintProperty('puntos3d', 'fill-extrusion-height', glued() ? base + side : ['+', base, side]);
+  });
+}
+
 function drawPoints3d() {
   const data = state.terrain.data;
   if (!tmap || !data) return;
   const p = data.points, lat0 = (data.bounds[1] + data.bounds[3]) / 2;
-  const metersPerPixel = (40075016.7 * Math.cos(lat0 * Math.PI / 180)) / (512 * 2 ** tmap.getZoom());
-  const side = Math.max(metersPerPixel * 7, 0.3), half = side / 2;
-  const features = [];
-  p.v.forEach((v, i) => {
-    if (p.alt[i] === null || p.ground[i] === null) return;
-    const lon = p.lon[i], lat = p.lat[i], k = classIndex(v, data.classes);
-    const dy = half / 111320, dx = half / (111320 * Math.cos(lat * Math.PI / 180));
-    features.push({ type: 'Feature', properties: { v, k, c: data.classes[k].color, base: p.above[i], top: p.above[i] + side, alt: p.alt[i], ground: p.ground[i], above: p.above[i] },
-      geometry: { type: 'Polygon', coordinates: [[[lon - dx, lat - dy], [lon + dx, lat - dy], [lon + dx, lat + dy], [lon - dx, lat + dy], [lon - dx, lat - dy]]] } });
-  });
+  state.terrain.zoom = tmap.getZoom();
+  const metersPerPixel = (40075016.7 * Math.cos(lat0 * Math.PI / 180)) / (512 * 2 ** state.terrain.zoom);
+  const side = state.terrain.side = Math.max(metersPerPixel * 7, 0.3), half = side / 2, dy = half / 111320;
+  const features = new Array(p.v.length);
+  for (let i = 0; i < p.v.length; i++) {
+    const v = p.v[i], lon = p.lon[i], lat = p.lat[i], k = classIndex(v, data.classes);
+    const dx = half / (111320 * Math.cos(lat * Math.PI / 180)), props = { v, k, c: data.classes[k].color };
+    if (p.alt[i] !== null) props.alt = p.alt[i];
+    if (p.ground[i] !== null) props.ground = p.ground[i];
+    features[i] = { type: 'Feature', properties: props,
+      geometry: { type: 'Polygon', coordinates: [[[lon - dx, lat - dy], [lon + dx, lat - dy], [lon + dx, lat + dy], [lon - dx, lat + dy], [lon - dx, lat - dy]]] } };
+  }
   const collection = { type: 'FeatureCollection', features };
   if (tmap.getSource('puntos3d')) tmap.getSource('puntos3d').setData(collection);
   else {
     tmap.addSource('puntos3d', { type: 'geojson', data: collection });
-    tmap.addLayer({ id: 'puntos3d', type: 'fill-extrusion', source: 'puntos3d',
-      paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-opacity': 1 } });
+    tmap.addLayer({ id: 'puntos3d', type: 'fill-extrusion', source: 'puntos3d', paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-opacity': 1 } });
+    terrainFilter = null;
   }
+  terrainPaint();
 }
 
 $('tvar').addEventListener('change', () => { state.heat.name = $('tvar').value; refreshTerrain(); });
+
+// ---------- tema: automático (el del sistema), claro u oscuro, como el Modo noche de la versión 1 ----------
+// El <head> ya aplica el tema guardado antes de dibujar, para no ver un parpadeo del otro color.
+const THEMES = { auto: ['◐', 'Tema automático (sigue al sistema)'], light: ['☀', 'Tema claro'], dark: ['☾', 'Tema oscuro'] };
+let theme = 'auto';
+try { theme = localStorage.getItem('gaslab.tema') || 'auto'; } catch (error) { /* sin almacenamiento */ }
+if (!THEMES[theme]) theme = 'auto';
+// Plotly guarda los colores al dibujar: hay que redibujar las gráficas con los colores nuevos.
+function redrawAll() {
+  if (!state.id) return;
+  loadRoute();
+  refresh();
+  if (state.step === 2) refreshBig();
+  if (state.step === 5 && state.excel.data) renderExcelSheet();
+}
+function applyTheme(redraw) {
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  $('theme').textContent = THEMES[theme][0];
+  $('theme').title = `${THEMES[theme][1]} · clic para cambiar`;
+  if (redraw) redrawAll();
+}
+applyTheme(false);
+$('theme').addEventListener('click', () => {
+  theme = { auto: 'light', light: 'dark', dark: 'auto' }[theme];
+  try { localStorage.setItem('gaslab.tema', theme); } catch (error) { /* no se recuerda, pero funciona */ }
+  applyTheme(true);
+  toast(THEMES[theme][1] + '.');
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (theme === 'auto') redrawAll(); });
 
 // Avisa al servidor que la página sigue abierta; con --ventana (la app de Windows) GasLab se cierra al cerrarla.
 const pageId = Math.random().toString(36).slice(2);

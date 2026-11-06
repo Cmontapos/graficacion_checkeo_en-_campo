@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GasLab 2.0</title>
 <link rel="icon" type="image/png" href="icono.png">
+<script>try { const t = localStorage.getItem('gaslab.tema'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
 <link rel="stylesheet" href="vendor/maplibre-gl.css">
 <link rel="stylesheet" href="app.css">
 <script src="plotly.min.js"></script>
@@ -18,20 +19,28 @@
     <button class="tab" data-step="2" disabled title="Abre un archivo primero">2 · Límites</button>
     <button class="tab" data-step="3" disabled title="Abre un archivo primero">3 · Mapa de calor</button>
     <button class="tab" data-step="4" disabled title="Abre un archivo primero">4 · Terreno 3D</button>
+    <button class="tab" data-step="5" disabled title="Abre un archivo primero">5 · Excel</button>
   </nav>
-  <label class="button primary">Abrir archivo…<input id="file" type="file" accept=".csv,.txt,text/csv,.xlsx,.xlsm" hidden></label>
+  <label class="button primary">Abrir archivo…<input id="file" type="file" accept=".csv,.txt,text/csv,.dat,.xlsx,.xlsm" hidden></label>
   <div id="fileinfo" class="fileinfo">Ningún archivo abierto</div>
+  <div class="seg" id="calbox" hidden title="Este archivo trae columnas calibradas (_cal): elige cuáles usar. Se recuerda para los próximos archivos.">
+    <button data-cal="original">Original</button><button data-cal="cal">Calibrado</button><button data-cal="compare" title="Las gráficas muestran las dos versiones; los mapas usan la calibrada">Comparación</button>
+  </div>
+  <div class="seg" id="gpsbox" hidden title="Este archivo trae también el GPS del dron: elige qué posiciones usan los mapas. Se recuerda para los próximos archivos.">
+    <button data-gps="sensor">GPS sensor</button><button data-gps="dron">Dron</button><button data-gps="both" title="La ruta muestra las dos; los mapas de calor y terreno usan la del dron">Ambos</button>
+  </div>
   <label class="zone" id="sheetbox" hidden title="Este Excel tiene varias hojas con datos"><select id="sheet"></select></label>
   <label class="zone">Zona horaria
     <input id="zone" list="zones" value="UTC" spellcheck="false" autocomplete="off">
     <datalist id="zones"></datalist>
   </label>
+  <button id="theme" class="button themebtn" aria-label="Tema">◐</button>
 </header>
 
 <section id="empty" class="empty">
   <div class="drop">
-    <p class="big">Abre un CSV o un Excel (.xlsx) para empezar</p>
-    <p>Pulsa <b>Abrir archivo…</b> o arrastra el archivo aquí. Funciona con CSV de MicroGas Receptor, DJI, Simulado y Campbell (Flight_Data).</p>
+    <p class="big">Abre un CSV, un .dat de Campbell o un Excel (.xlsx) para empezar</p>
+    <p>Pulsa <b>Abrir archivo…</b> o arrastra el archivo aquí. Funciona con CSV de MicroGas Receptor, DJI, Simulado y Campbell (Flight_Data y .dat TOA5).</p>
   </div>
 </section>
 
@@ -49,10 +58,22 @@
     <div id="varlist" class="varlist"></div>
   </div>
 
+  <div class="card tramobar">
+    <span class="cfg-title">Tramo</span>
+    <label class="field" title="Una pausa mayor a este tiempo entre dos muestras divide la medición en otro tramo">Inactividad &gt; <input id="gap" type="number" min="1" max="86400" step="1" value="1200"> s</label>
+    <label class="field" title="Tramos continuos de la medición; limita las gráficas y los mapas al tramo elegido"><select id="tramo"></select></label>
+    <span class="sep">|</span>
+    <label class="field">Día <select id="day" class="short"></select></label>
+    <label class="field">de <select id="hfrom" class="short"></select></label>
+    <label class="field">a <select id="hto" class="short"></select></label>
+    <button id="alltime" class="button">Todo</button>
+    <span id="tramoinfo" class="muted"></span>
+  </div>
+
   <div class="grid">
     <div class="left">
       <div class="card">
-        <div class="card-head"><h3>Ruta GPS</h3><span id="routeinfo" class="muted"></span></div>
+        <div class="card-head"><h3>Ruta GPS</h3><span id="routeinfo" class="muted"></span><button id="routekmz" class="button small" title="La ruta (del tramo y GPS elegidos) para abrir en Google Earth">Google Earth (.kmz)</button></div>
         <div id="map" class="plot map"></div>
       </div>
       <div class="card">
@@ -97,6 +118,7 @@
     </div>
     <div class="cfg-row">
       <span class="cfg-title">Escala</span>
+      <span class="group"><div class="seg" id="hspacing" role="group" aria-label="Divisiones"><button data-spacing="original" class="on">Original</button><button data-spacing="lineal">Lineal</button><button data-spacing="exponencial">Exponencial</button></div><button class="info" data-info="spacing" aria-label="Qué es original, lineal o exponencial">i</button></span>
       <span class="group"><label class="field">Divisiones iniciales <input id="hbins" type="number" min="2" max="100" step="1" value="20"></label><button class="info" data-info="bins" aria-label="Qué son las divisiones iniciales">i</button></span>
       <span class="group"><label class="field">% mínimo por división <input id="hmin" type="number" min="0" max="50" step="0.5" value="5"></label><button class="info" data-info="minpct" aria-label="Qué es el % mínimo por división">i</button></span>
     </div>
@@ -104,8 +126,8 @@
       <span class="cfg-title">Nube</span>
       <label class="field">Tamaño <input id="hsize" type="range" min="0.1" max="2" step="0.1" value="1"><output for="hsize"></output></label>
       <label class="field">Opacidad <input id="hop" type="range" min="10" max="100" step="5" value="95"><output for="hop"></output></label>
-      <span class="group"><label class="field">Enfriamiento <input id="hcool" type="range" min="0" max="5" step="0.1" value="1"><output for="hcool"></output></label><button class="info" data-info="cool" aria-label="Qué es el enfriamiento">i</button></span>
-      <span class="group"><label class="field">Alcance <input id="hreach" type="range" min="1" max="4" step="0.1" value="2.5"><output for="hreach"></output></label><button class="info" data-info="reach" aria-label="Qué es el alcance">i</button></span>
+      <span class="group"><label class="field">Enfriamiento <input id="hcool" type="range" min="0" max="10" step="0.1" value="1"><output for="hcool"></output></label><button class="info" data-info="cool" aria-label="Qué es el enfriamiento">i</button></span>
+      <span class="group"><label class="field">Alcance <input id="hreach" type="range" min="1" max="50" step="1" value="30"><output for="hreach"></output></label><button class="info" data-info="reach" aria-label="Qué es el alcance">i</button></span>
     </div>
     <div class="cfg-row" data-view="3d" hidden>
       <span class="cfg-title">Barras</span>
@@ -116,6 +138,7 @@
       <span class="cfg-title">Guardar</span>
       <button id="hpng" class="button">Imagen PNG</button>
       <button id="hzip" class="button">GeoTIFF + QGIS (.zip)</button>
+      <button id="hkmz" class="button" title="Lo que se ve, para Google Earth: en 2D la nube, en 3D las barras; con la leyenda y la ruta">Google Earth (.kmz)</button>
     </div>
   </div>
   <div class="heatgrid">
@@ -135,7 +158,17 @@
   <div class="card heatcfg">
     <div class="cfg-row">
       <label class="field strong">Señal <select id="tvar"></select></label>
-      <span class="muted">Escala y colores del paso 3. Cada muestra flota a la altura que midió, sobre el relieve real. Clic derecho o Ctrl + arrastrar gira e inclina la vista.</span>
+      <span class="muted">Escala y colores del paso 3, sobre el relieve real. Clic derecho o Ctrl + arrastrar gira e inclina la vista.</span>
+    </div>
+    <div class="cfg-row">
+      <span class="cfg-title">Altura</span>
+      <div class="seg" id="tmode"><button data-mode="measured" class="on">Medida</button><button data-mode="ground">Pegada al terreno</button></div>
+      <span class="group"><label class="field">Desfase <input id="toffset" type="number" step="0.1" value="0" inputmode="decimal" title="Cualquier valor, en metros"> m <input id="toffsetr" type="range" min="-5" max="5" step="0.1" value="0" aria-label="Ajuste fino del desfase" title="Ajuste fino: ±5 m alrededor del número"></label><button class="info" data-info="offset" aria-label="Qué es el desfase de altura">i</button></span>
+    </div>
+    <div class="cfg-row">
+      <span class="cfg-title">Guardar</span>
+      <button id="tkmz" class="button" title="Las muestras a su altura (con el modo y el desfase elegidos), la leyenda y la ruta para Google Earth">Google Earth (.kmz)</button>
+      <span class="muted">Google Earth usa su propio relieve y mide la altura sobre el nivel del mar con otro modelo: si los puntos quedan enterrados o flotando, corrígelo con el desfase.</span>
     </div>
     <div id="tnote" class="tnote" hidden></div>
   </div>
@@ -149,6 +182,28 @@
       <div id="trange" class="hrange"></div>
       <table><thead><tr><th></th><th>Rango</th><th>Muestras</th><th>%</th></tr></thead><tbody id="ttable"></tbody></table>
     </div>
+  </div>
+ </div>
+
+ <div id="step5" class="step" hidden>
+  <div class="card heatcfg">
+    <div class="cfg-row">
+      <span class="cfg-title">Tramo</span>
+      <div class="seg" id="xrange"><button data-range="all">Todo el archivo</button><button data-range="tramo">Tramo elegido</button><button data-range="visible">Parte visible (paso 1)</button></div>
+      <span id="xnote" class="muted"></span>
+    </div>
+    <div class="cfg-row">
+      <span class="cfg-title">Contenido</span>
+      <span id="xwhat"></span>
+    </div>
+    <div class="cfg-row">
+      <button id="excel" class="button primary">Descargar Excel</button>
+      <span id="xfile" class="muted"></span>
+    </div>
+  </div>
+  <div class="card xlbook">
+    <div id="xlsheet" class="xlsheet"><div class="empty-note">Preparando la vista previa…</div></div>
+    <div id="xltabs" class="xltabs" role="tablist"></div>
   </div>
  </div>
 </section>

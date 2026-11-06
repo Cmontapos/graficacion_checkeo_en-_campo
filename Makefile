@@ -11,13 +11,14 @@ endif
 
 STAMP := .venv/.instalado
 
-.PHONY: help setup run test build clean
+.PHONY: help setup run test build android clean
 
 help:
 	@echo make setup  - crea .venv e instala dependencias de build
 	@echo make run    - abre GasLab 2.0 en el navegador
 	@echo make test   - ejecuta los tests
 	@echo make build  - genera dist/GasLab/ con GasLab 2.0, GasLab.exe en Windows
+	@echo make android - genera dist/GasLab.apk para Android (necesita Java 17 y el SDK de Android)
 	@echo make clean  - borra build/ y dist/
 
 setup: $(STAMP)
@@ -36,6 +37,17 @@ test: $(STAMP)
 build: $(STAMP)
 	$(VPY) -m PyInstaller --noconfirm --clean GasLab.spec
 	@echo Listo: dist/GasLab
+
+android: $(STAMP)
+ifeq ($(OS),Windows_NT)
+	cd android && gradlew.bat assembleRelease
+	if not exist dist mkdir dist
+	copy /y android\app\build\outputs\apk\release\app-release.apk dist\GasLab.apk
+else
+	cd android && ./gradlew assembleRelease
+	mkdir -p dist && cp android/app/build/outputs/apk/release/app-release.apk dist/GasLab.apk
+endif
+	@echo Listo: dist/GasLab.apk
 
 clean:
 	$(call RM_RF,build)

@@ -10,7 +10,7 @@ a = Analysis(
     ['gaslab_web.py'],
     pathex=[],
     datas=datas,
-    hiddenimports=['tzdata', 'PIL.TiffImagePlugin', 'openpyxl'],
+    hiddenimports=['tzdata', 'PIL.TiffImagePlugin', 'openpyxl', 'xlsxwriter'],
     excludes=['PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'pyqtgraph', 'folium', 'tkinter', 'matplotlib', 'IPython', 'pytest'],
 )
 pyz = PYZ(a.pure)

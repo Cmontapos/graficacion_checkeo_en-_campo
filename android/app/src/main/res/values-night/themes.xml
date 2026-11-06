@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema oscuro del sistema: el WebView informa prefers-color-scheme: dark y la página se ve oscura, como en la PC. -->
+    <style name="GasLab" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#121212</item>
+        <item name="android:isLightTheme">false</item>
+    </style>
+</resources>

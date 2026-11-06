@@ -404,16 +404,39 @@ def export(base, lat, lon, values, name, cell_m=10, stat='media', smooth=1.0, t=
 # escala por divisiones que se adapta a donde hay mas muestras (adaptive_classes). Con `cool` > 0 cada muestra se
 # "enfria" hacia los lados: su valor baja hacia el minimo de la escala a medida que se aleja del centro.
 CLOUD_REACH = 2.5  # alcance por defecto, en veces el tamano (sigma)
-CLOUD_MAX_REACH = 4.0  # mas lejos la densidad es tan pequena que el promedio de valores ya no es fiable
+CLOUD_MAX_REACH = 500.0  # en veces el tamano (p. ej. 50 m con 0,1 m de tamano)
+COOL_SCALE_M = 10.0  # metros: escala del enfriamiento y del promedio lejos de las muestras (no depende del alcance)
 CLOUD_MAX_PX = 2500  # lado maximo de la imagen completa (exportacion); en la app se calcula solo la zona visible
 # Escala de la nube: los mismos tonos que RAMP pero puros y saturados, para que resalten sobre la imagen satelital.
 INTENSE_RAMP = ((0.0, (0, 40, 255)), (0.2, (0, 200, 255)), (0.4, (0, 255, 60)), (0.6, (255, 240, 0)), (0.8, (255, 110, 0)), (1.0, (255, 0, 40)))
 
 
-def adaptive_classes(values, bins=20, min_pct=5.0):
-    """Divisiones de color: `bins` rangos iguales entre el minimo y el maximo; cada rango con menos de `min_pct` %
-    de las muestras se une al vecino con menos muestras, hasta que todos lleguen al minimo. Asi quedan mas
-    divisiones donde se concentran las muestras. Devuelve (bordes, cantidades)."""
+EXP_DECADES = 3  # divisiones exponenciales: la ultima es 10**3 = 1000 veces mas ancha que la primera
+ORIGINAL_MIN_PCT = 5.0  # % minimo inicial de la escala 'original' (la de antes del 2026-11-04); las demas empiezan en 0 %
+SPACINGS = ('original', 'lineal', 'exponencial')
+
+
+def initial_edges(lo, hi, bins, spacing='lineal'):
+    """Bordes de las divisiones iniciales entre lo y hi. 'lineal': todas del mismo ancho. 'exponencial': cada una
+    es un factor fijo mas ancha que la anterior (finas cerca del minimo, anchas hacia el maximo), de modo que la
+    ultima es 10**EXP_DECADES veces la primera; funciona tambien con valores negativos o cero."""
+    n = max(int(bins), 1)
+    if spacing != 'exponencial' or n == 1:
+        return np.linspace(lo, hi, n + 1)
+    ratio = 10 ** (EXP_DECADES / max(n - 1, 1))  # ancho(k+1) / ancho(k)
+    widths = ratio ** np.arange(n)
+    edges = lo + (hi - lo) * np.concatenate(([0.0], np.cumsum(widths) / widths.sum()))
+    edges[-1] = hi
+    return edges
+
+
+def adaptive_classes(values, bins=20, min_pct=0.0, spacing='lineal'):
+    """Divisiones de color: `bins` rangos entre el minimo y el maximo (iguales o exponenciales, ver initial_edges);
+    cada rango con menos de `min_pct` % de las muestras se une al vecino con menos muestras, hasta que todos
+    lleguen al minimo. Asi quedan mas divisiones donde se concentran las muestras. 'original' es la escala de antes
+    (divisiones iguales, calculadas igual que antes); con min_pct = ORIGINAL_MIN_PCT da los mismos colores de antes.
+    Devuelve (bordes, cantidades)."""
+    original = spacing == 'original'
     values = np.asarray(values, float)
     values = values[np.isfinite(values)]
     if not len(values):
@@ -421,7 +444,9 @@ def adaptive_classes(values, bins=20, min_pct=5.0):
     lo, hi = float(values.min()), float(values.max())
     if hi <= lo:
         return np.array([lo, lo]), np.array([len(values)])
-    counts, edges = np.histogram(values, bins=max(int(bins), 1), range=(lo, hi))
+    # 'original': la misma llamada de antes (bins + range), para que reparta los bordes exactamente igual.
+    counts, edges = (np.histogram(values, bins=max(int(bins), 1), range=(lo, hi)) if original
+                     else np.histogram(values, bins=initial_edges(lo, hi, bins, spacing)))
     edges, counts = list(edges), list(counts)
     need = len(values) * float(min_pct) / 100
     while len(counts) > 1 and min(counts) < need:
@@ -442,23 +467,81 @@ def class_of(values, edges):
     return np.clip(np.searchsorted(edges[1:-1], values, side='right'), 0, len(edges) - 2)
 
 
-def _gauss_fft(a, sigma):
+def _fast_size(n):
+    """Menor tamano >= n que solo tiene factores 2, 3 y 5 (la FFT es mucho mas rapida que con un primo grande)."""
+    best = 1 << max(int(n - 1).bit_length(), 0)
+    p5 = 1
+    while p5 < best:
+        p35 = p5
+        while p35 < best:
+            p2 = p35
+            while p2 < n:
+                p2 *= 2
+            best = min(best, p2)
+            p35 *= 3
+        p5 *= 5
+    return best
+
+
+def _gauss_fft(a, sigma, *more):
     """Suavizado gaussiano por FFT (sigma en pixeles; rapido aunque la nube sea grande). Devuelve (resultado, pico)
-    con `pico` = valor en el centro de una muestra aislada."""
-    fy, fx = np.fft.fftfreq(a.shape[0])[:, None], np.fft.rfftfreq(a.shape[1])[None, :]
-    h = np.exp(-2 * (np.pi * sigma) ** 2 * (fx ** 2 + fy ** 2))
-    out = np.fft.irfft2(np.fft.rfft2(a) * h, s=a.shape)
-    peak = float(np.fft.irfft2(h, s=a.shape)[0, 0])
-    return out, peak
+    con `pico` = valor en el centro de una muestra aislada. Con mas sigmas (`more`) devuelve un par por cada uno,
+    reusando la transformada de `a`. Se rellena con ceros hasta un tamano rapido (sin volver por el borde opuesto)."""
+    ny, nx = a.shape
+    shape = (_fast_size(ny), _fast_size(nx))
+    fy, fx = np.fft.fftfreq(shape[0])[:, None], np.fft.rfftfreq(shape[1])[None, :]
+    spectrum = np.fft.rfft2(a, s=shape)
+    out = []
+    for s in (sigma, *more):
+        k = 2 * (np.pi * s) ** 2
+        result = np.fft.irfft2(spectrum * (np.exp(-k * fy ** 2) * np.exp(-k * fx ** 2)), s=shape)[:ny, :nx]
+        # El nucleo es separable: su valor en el centro es el producto de los de cada eje.
+        peak = float(np.fft.ifft(np.exp(-k * fy[:, 0] ** 2)).real[0] * np.fft.irfft(np.exp(-k * fx[0] ** 2), n=shape[1])[0])
+        out.append((result, peak))
+    return out[0] if not more else out
+
+
+def _distance_px(occupied, limit_px, f=1, shift=0):
+    """Distancia en pixeles de cada pixel a la muestra mas cercana, valida hasta `limit_px` (mas lejos da un numero
+    enorme). Distancia euclidiana exacta en dos pasadas (filas y columnas), sobre una cuadricula gruesa de `f` pixeles
+    por celda para que sea rapida; despues se interpola. El error es menor a una celda gruesa. `shift` alinea las
+    celdas con la vista, asi el resultado no depende del margen (que crece con el alcance)."""
+    f = max(1, int(f))
+    gy, gx = occupied.shape
+    coarse = np.zeros((-(-(gy + shift) // f), -(-(gx + shift) // f)), bool)
+    ys, xs = np.nonzero(occupied)
+    coarse[(ys + shift) // f, (xs + shift) // f] = True
+    reach = int(math.ceil(limit_px / f)) + 1
+    d2 = np.where(coarse, 0.0, 1e18)
+    for axis in (1, 0):
+        a, out = d2, d2.copy()
+        n = a.shape[axis]
+        for k in range(1, min(reach, n - 1) + 1):
+            head, tail = [slice(None)] * 2, [slice(None)] * 2
+            head[axis], tail[axis] = slice(k, None), slice(None, -k)
+            np.minimum(out[tuple(head)], a[tuple(tail)] + k * k, out=out[tuple(head)])
+            np.minimum(out[tuple(tail)], a[tuple(head)] + k * k, out=out[tuple(tail)])
+        d2 = out
+    d = np.sqrt(d2) * f
+    cy, cx = d.shape
+    y = np.clip((np.arange(gy) + shift + 0.5) / f - 0.5, 0, cy - 1)
+    x = np.clip((np.arange(gx) + shift + 0.5) / f - 0.5, 0, cx - 1)
+    y0, x0 = np.floor(y).astype(int), np.floor(x).astype(int)
+    y1, x1 = np.minimum(y0 + 1, cy - 1), np.minimum(x0 + 1, cx - 1)
+    wy, wx = (y - y0)[:, None], (x - x0)[None, :]
+    top = d[y0][:, x0] * (1 - wx) + d[y0][:, x1] * wx
+    bottom = d[y1][:, x0] * (1 - wx) + d[y1][:, x1] * wx
+    return top * (1 - wy) + bottom * wy
 
 
 def cloud(lon, lat, values, edges, size_m=1.0, opacity=0.95, bounds=None, res=None, cool=0.0, reach=CLOUD_REACH):
     """Nube de calor en Web Mercator. Sin `bounds`, cubre todas las muestras; con `bounds` = (xmin, ymin, xmax, ymax)
     en Web Mercator y `res` (unidades por pixel), solo esa zona (lo que se ve en la app, nitido con cualquier zoom).
-    `cool` = rapidez del enfriamiento: el valor se multiplica (respecto al minimo) por densidad**cool, o sea
-    exp(-cool * d² / 2 tamano²) para una muestra aislada; 0 = mismo color hasta el borde.
-    `reach` = hasta cuantas veces el tamano se pinta la nube; el desvanecimiento se estira con el, pero el nucleo y el
-    enfriamiento siguen dependiendo solo del tamano.
+    `cool` = enfriamiento, el tamano de la zona de calor: el valor baja (respecto al minimo) por
+    exp(-cool * d² / 2 COOL_SCALE_M²), con d = metros a la muestra mas cercana; con 1, a 10 m queda al 60 %, y con mas
+    enfriamiento la zona de calor es mas chica. 0 = mismo color hasta el borde. No depende del tamano ni del alcance.
+    `reach` = hasta cuantas veces el tamano llega la nube; la mitad exterior se desvanece. Solo cambia cuanto se
+    extiende: los colores y la opacidad del centro no dependen de el.
     Devuelve dict con rgba (filas de norte a sur), values (NaN fuera de la nube), x0, y_top, res y corners
     [lon, lat] (NO, NE, SE, SO)."""
     lon, lat, values = (np.asarray(a, float) for a in (lon, lat, values))
@@ -485,21 +568,36 @@ def cloud(lon, lat, values, edges, size_m=1.0, opacity=0.95, bounds=None, res=No
     flat = row[use] * gx + col[use]
     weight = np.bincount(flat, minlength=gx * gy).reshape(gy, gx).astype(float)
     total = np.bincount(flat, weights=values[use], minlength=gx * gy).reshape(gy, gx)
-    density, peak = _gauss_fft(weight, sigma / res)
-    smooth, _ = _gauss_fft(total, sigma / res)
+    # Tres cosas independientes: el Tamano (nucleo de cada muestra), el Enfriamiento (zona de calor, en metros) y el
+    # Alcance (solo hasta donde llega la nube y su borde transparente). Cambiar el alcance no cambia el centro.
+    meters = sigma / float(size_m)  # unidades de Web Mercator por metro
+    wide = COOL_SCALE_M * meters  # nucleo ancho para el promedio de la zona (lejos de las muestras)
+    (density, peak), (wdensity, wpeak) = _gauss_fft(weight, sigma / res, wide / res)
+    (smooth, _), (wsmooth, _) = _gauss_fft(total, sigma / res, wide / res)
     crop = (slice(margin, margin + ny), slice(margin, margin + nx))
     density, smooth = density[crop] / peak, smooth[crop]
-    inside = density > math.exp(-reach ** 2 / 2)
-    value = np.where(inside, smooth / np.where(inside, density * peak, 1), np.nan)
-    if cool > 0:  # en el centro (densidad >= 1) queda el valor medido; hacia los lados baja al minimo de la escala
-        value = edges[0] + (value - edges[0]) * np.minimum(density, 1) ** float(cool)
+    wdensity, wsmooth = wdensity[crop] / wpeak, wsmooth[crop]
+    # Borde: distancia (en metros) a la muestra mas cercana. No sale de la suma de gaussianas, que a lo largo de una
+    # ruta con muchas muestras seguidas se estira mucho mas alla del alcance.
+    reach_m = reach * float(size_m)
+    # Celda gruesa fija (~1/24 de la escala del enfriamiento) y alineada con la vista: no depende del alcance.
+    f = max(1, int(COOL_SCALE_M * meters / res / 24))
+    dist = _distance_px(weight > 0, reach * sigma / res + 2, f, (-margin) % f)[crop] * res / meters
+    inside = dist <= reach_m
+    # Valor: el de cada muestra cerca (hasta ~2 tamanos) y el promedio de la zona lejos (desde ~5), con un paso suave.
+    sure = density > 1e-6
+    v_core = np.where(sure, smooth / np.where(sure, density * peak, 1), 0)
+    ok = inside & (wdensity > 1e-12)
+    v_wide = np.where(ok, wsmooth / np.where(ok, wdensity * wpeak, 1), np.nan)
+    blend = np.clip((np.log(np.clip(density, 1e-300, None)) - math.log(1e-6)) / (math.log(0.1) - math.log(1e-6)), 0, 1) ** 2
+    value = np.where(inside, blend * v_core + (1 - blend) * np.where(np.isfinite(v_wide), v_wide, v_core), np.nan)
+    if cool > 0:  # en el centro queda el valor medido; hacia los lados baja al minimo de la escala
+        value = edges[0] + (value - edges[0]) * np.exp(-float(cool) * dist ** 2 / (2 * COOL_SCALE_M ** 2))
     rgba = np.zeros((ny, nx, 4), np.uint8)
     rgba[inside, :3] = class_colors(len(edges) - 1)[class_of(value[inside], edges)]
-    # Saturado donde se midio y se degrada hacia los lados.
-    # La distancia equivalente (en tamanos) se escala para que el borde transparente caiga en `reach`.
-    near = np.exp(-(CLOUD_REACH / reach) ** 2 * -np.log(np.clip(density, 1e-300, 1)))
-    cut = math.exp(-CLOUD_REACH ** 2 / 2)
-    alpha = np.clip((near - cut) / (1 - cut), 0, 1) ** 0.45
+    # Opaca en la mitad interior del alcance y se desvanece en la exterior (suave, sin escalon).
+    t = np.clip((reach_m - dist) / (0.5 * reach_m), 0, 1)
+    alpha = t * t * (3 - 2 * t)
     rgba[..., 3] = np.where(inside, np.round(255 * float(opacity) * alpha), 0).astype(np.uint8)
     to_lonlat = lambda px, py: [float(np.degrees(px / EARTH)), float(np.degrees(2 * np.arctan(np.exp(py / EARTH)) - np.pi / 2))]
     x1, y1 = xmin + nx * res, ymax - ny * res
